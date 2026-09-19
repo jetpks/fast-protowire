@@ -40,7 +40,7 @@ def seconds(&block)
   block.call
   GC.start
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  RUNS.times(&block)
+  RUNS.times { block.call }
   (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) / RUNS
 end
 
