@@ -27,7 +27,7 @@ Class methods
 | Signature | Returns | Notes |
 |---|---|---|
 | `.new(attributes = nil, **keywords)` | instance | Takes a Hash (String or Symbol keys) or keywords. Nested Hashes build message-typed fields; Arrays fill repeated fields; Hashes fill maps; Symbols or Integers set enums. Raises `ArgumentError` for an unknown name and `TypeError`/`RangeError` for a value the field can't hold. |
-| `.decode(bytes)` | instance | Parses `bytes` (a binary String). Later scalars win, repeated fields append, nested messages merge, packed and unpacked repeated scalars are both accepted, unknown fields are kept. Raises `DecodeError` on truncated input, an unknown wire type, or a known field with the wrong wire type. |
+| `.decode(bytes)` | instance | Parses `bytes` as bytes, whatever the String is tagged (a non-binary one is read through a binary view of it; the input is never modified). Later scalars win, repeated fields append, nested messages merge, packed and unpacked repeated scalars are both accepted, unknown fields are kept — including a declared field that arrives with a wire type it doesn't accept, which is kept verbatim rather than raised on, as the reference does. A map entry that omits its value yields the value type's default, an empty message for a message-typed value. Nesting deeper than `Reader::MAX_DEPTH` (100, the reference's limit), a `string` field whose bytes aren't valid UTF-8 under proto3, truncated input and an unknown wire type all raise `DecodeError`. |
 | `.encode(message)` | `String` | Same as `message.encode`. |
 | `.fields` | `Hash{Symbol => Field}` | Declared fields in declaration order. |
 | `.fields_by_number` | `Hash{Integer => Field}` | |
@@ -52,7 +52,7 @@ Integers are kept as Integers), messages an instance of the class or a Hash to b
 
 | Signature | Returns | Notes |
 |---|---|---|
-| `encode(buffer = String.new)` | `buffer` | Appends the message's bytes to `buffer` and returns it. Fields are written in number order, then any unknown fields. |
+| `encode(buffer = String.new)` | `buffer` | Appends the message's bytes to `buffer` and returns it. Fields are written in number order, then any unknown fields. `buffer` holds bytes, so it must be a binary String: an empty one of any encoding (`+""`, `String.new("")`) is retagged binary, and a non-binary one already holding text raises `ArgumentError` rather than widening the bytes to that encoding's characters. |
 | `to_proto(buffer = String.new)` | `buffer` | Same as `encode`; the name `protocol-grpc` and `google-protobuf` callers look for. |
 | `merge_from(reader)` | `self` | Reads fields from a `Reader` into this message with the merge semantics of `.decode`. |
 | `to_h` | `Hash{Symbol => Object}` | Fields with presence appear only when set; others always, with their default. Nested messages become Hashes recursively; enums stay Symbols. |
@@ -66,7 +66,7 @@ Integers are kept as Integers), messages an instance of the class or a Hash to b
 
 | Class | Raised when |
 |---|---|
-| `Fast::Protowire::DecodeError` (`< Fast::Protowire::Error < StandardError`) | Input doesn't parse: truncated varint or field, unknown wire type, wrong wire type for a declared field, malformed group. |
+| `Fast::Protowire::DecodeError` (`< Fast::Protowire::Error < StandardError`) | Input doesn't parse: truncated varint or field, a varint longer than ten bytes, unknown wire type, malformed group, nesting past `Reader::MAX_DEPTH`, or invalid UTF-8 in a proto3 `string`. A wire type a declared field doesn't accept is not an error; the field is kept as an unknown one. |
 | `::TypeError` | A value of the wrong Ruby type is assigned. |
 | `::RangeError` | An integer out of the type's range, a non-integral number for an integer field, or an undeclared enum Symbol. |
-| `::ArgumentError` | An unknown field name on construction, invalid UTF-8 for a string field, or an invalid declaration. |
+| `::ArgumentError` | An unknown field name on construction, invalid UTF-8 for a string field, an invalid declaration, or a non-binary `encode` buffer holding text. |

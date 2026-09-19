@@ -59,6 +59,12 @@ describe Fast::Protowire::Wire do
     expect(buffer.encoding).to be(:==, Encoding::BINARY)
   end
 
+  it "retags an empty buffer binary and refuses a non-binary one holding text" do
+    expect(wire.binary_buffer(+"").encoding).to be(:==, Encoding::BINARY)
+    expect(wire.binary_buffer(String.new).encoding).to be(:==, Encoding::BINARY)
+    expect { wire.binary_buffer(+"abc") }.to raise_exception(::ArgumentError)
+  end
+
   it "writes a length prefix behind a payload appended in place, at whatever width the payload turns out to need" do
     tag = wire.tag(2, wire::LENGTH_DELIMITED)
     buffer = String.new
@@ -110,6 +116,17 @@ describe Fast::Protowire::Reader do
     expect { reader_class.new("\x01\x00\x00".b).read_fixed32 }.to raise_exception(Fast::Protowire::DecodeError)
     expect { reader_class.new("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01".b).read_varint }
       .to raise_exception(Fast::Protowire::DecodeError)
+  end
+
+  it "truncates a varint carrying bits above 64" do
+    expect(reader_class.new("#{"\xff" * 9}\x7f".b).read_varint).to be(:==, (1 << 64) - 1)
+    expect(reader_class.new("#{"\x80" * 9}\x02".b).read_varint).to be(:==, 0)
+  end
+
+  it "hands out binary slices whatever the input is tagged" do
+    reader = reader_class.new("\x02\xc3\xa9\x02\xff\xfe".b.force_encoding(Encoding::UTF_8))
+    expect(reader.read_length_delimited).to be(:==, "\xc3\xa9".b)
+    expect(reader.skip(2)).to be(:==, "\x02\xff\xfe".b)
   end
 
   it "bounds itself to a nested value for a block and picks up after it" do

@@ -28,6 +28,13 @@ Ruby values it holds, and the rules that decide whether and how it's written.
 Integers are validated on assignment: a non-integral `Numeric` or a value outside the range
 raises `RangeError`. Floats accept any `Numeric` and store `to_f`.
 
+On decode a varint carrying more bits than the field holds is truncated to the field's
+width, as every implementation does: `uint64`/`sint64`/`int64` to 64 bits,
+`int32`/`uint32`/`sint32`/enums to 32 before their sign or zigzag mapping is undone. A
+`string` field is tagged UTF-8 and, under proto3, must be valid UTF-8 or the decode raises
+`DecodeError`; proto2 keeps the bytes, as the reference does. A `bytes` field is binary,
+whatever the input String was tagged.
+
 ## Presence
 
 Whether a set field is written depends on its rule:
@@ -37,7 +44,7 @@ Whether a set field is written depends on its rule:
 | `field` under proto3 | The value is not the default. Strings and bytes when non-empty, bools when `true`, enums when non-zero, integers when non-zero, floats when their bits are non-zero (`-0.0` is written; `0.0` is not), messages whenever set (an empty message is written as a zero-length field). |
 | `field` under proto2, `optional`, `required`, any oneof member | Whenever set, including when set to the default. |
 | `repeated` | When non-empty. |
-| `map` | When non-empty, one length-delimited entry per pair, in insertion order. Each entry writes its key (field 1) and value (field 2) whether or not they're defaults. |
+| `map` | When non-empty, one length-delimited entry per pair, in insertion order. Each entry writes its key (field 1) and value (field 2) whether or not they're defaults. An entry that arrives without one of them decodes to that type's default — an empty message for a message-typed value. |
 
 ## Packing
 
@@ -45,7 +52,8 @@ A `repeated` field of a packable type (every scalar except `:string` and `:bytes
 included) is either packed, one length-delimited field holding all values back to back, or
 unpacked, one tagged value per element. proto3 packs by default; proto2 does not.
 `packed:` overrides either. Decoding accepts both forms regardless of the declaration, as
-the specification requires.
+the specification requires. Any other wire type on a declared field is schema drift: the
+field is kept as an unknown one and re-encoded verbatim, not raised on.
 
 ## Enums
 
