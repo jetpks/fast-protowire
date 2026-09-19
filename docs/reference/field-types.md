@@ -8,7 +8,7 @@ Ruby values it holds, and the rules that decide whether and how it's written.
 | Type | Wire type | Ruby value | Range | Default |
 |---|---|---|---|---|
 | `:double` | 64-bit (1) | `Float` | — | `0.0` |
-| `:float` | 32-bit (5) | `Float` | rounded to single precision on encode | `0.0` |
+| `:float` | 32-bit (5) | `Float` | rounded to single precision on assignment | `0.0` |
 | `:int32` | varint (0) | `Integer` | −2³¹ ... 2³¹−1; negatives take ten bytes | `0` |
 | `:int64` | varint (0) | `Integer` | −2⁶³ ... 2⁶³−1; negatives take ten bytes | `0` |
 | `:uint32` | varint (0) | `Integer` | 0 ... 2³²−1 | `0` |
@@ -26,7 +26,13 @@ Ruby values it holds, and the rules that decide whether and how it's written.
 | a `Message` class | length-delimited (2) | instance | — | `nil` |
 
 Integers are validated on assignment: a non-integral `Numeric` or a value outside the range
-raises `RangeError`. Floats accept any `Numeric` and store `to_f`.
+raises `RangeError`. Floats accept any `Numeric` and store `to_f`, except that a `:float`
+stores what the wire will carry, the value narrowed to single precision, as the reference
+narrows it: `f_float = 0.1` reads back `0.10000000149011612`, `3.5e38` reads `Infinity`,
+`1e-50` reads `0.0` and so isn't written at all. `decode(encode(m)) == m` follows from that.
+One exception is not covered: a 32-bit `float` NaN is written canonical (`7fc00000`), since
+Ruby's `pack("e")` drops the sign and payload bits the reference preserves. `double` NaNs
+round-trip whole.
 
 On decode a varint carrying more bits than the field holds is truncated to the field's
 width, as every implementation does: `uint64`/`sint64`/`int64` to 64 bits,
@@ -44,16 +50,19 @@ Whether a set field is written depends on its rule:
 | `field` under proto3 | The value is not the default. Strings and bytes when non-empty, bools when `true`, enums when non-zero, integers when non-zero, floats when their bits are non-zero (`-0.0` is written; `0.0` is not), messages whenever set (an empty message is written as a zero-length field). |
 | `field` under proto2, `optional`, `required`, any oneof member | Whenever set, including when set to the default. |
 | `repeated` | When non-empty. |
-| `map` | When non-empty, one length-delimited entry per pair, in insertion order. Each entry writes its key (field 1) and value (field 2) whether or not they're defaults. An entry that arrives without one of them decodes to that type's default — an empty message for a message-typed value. |
+| `map` | When non-empty, one length-delimited entry per pair, in insertion order. Each entry writes its key (field 1) and value (field 2) whether or not they're defaults. An entry that arrives without one of them decodes to that type's default — an empty message for a message-typed value. An entry that arrives with more than those two is kept out of the map, as an unknown field of the message; see [How encoding works](../explanation/encoding.md#decoding). |
 
 ## Packing
 
 A `repeated` field of a packable type (every scalar except `:string` and `:bytes`; enums
 included) is either packed, one length-delimited field holding all values back to back, or
 unpacked, one tagged value per element. proto3 packs by default; proto2 does not.
-`packed:` overrides either. Decoding accepts both forms regardless of the declaration, as
-the specification requires. Any other wire type on a declared field is schema drift: the
-field is kept as an unknown one and re-encoded verbatim, not raised on.
+`packed:` overrides either — except that `packed: true` on a type that can't pack (`:string`,
+`:bytes`, a message) is a declaration the wire format has no form for, so it raises
+`ArgumentError` where it's written rather than at the first `encode`. Decoding accepts both
+forms regardless of the declaration, as the specification requires. Any other wire type on a
+declared field is schema drift: the field is kept as an unknown one and re-encoded verbatim,
+not raised on.
 
 ## Enums
 

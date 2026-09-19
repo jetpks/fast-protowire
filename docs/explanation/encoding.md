@@ -80,11 +80,18 @@ field's wire type, store it. Repeated scalars are accepted packed or unpacked wh
 declaration says. A second occurrence of a scalar replaces the first; of a repeated field,
 appends; of a nested message, merges into the existing one. A tag the class doesn't
 declare is skipped by wire type (groups included) and its raw bytes kept, so `encode` can
-write it back. Decoding isn't compiled because it isn't on anyone's hot path yet; it
-would be the same technique if it were.
+write it back. Two more things take that same path, because the reference puts them there
+rather than raising: a declared field arriving with a wire type it doesn't accept, which is
+schema drift and not corruption; and a map entry carrying more than a key and a value — an
+undeclared subfield, or a key or value with a wire type the entry doesn't accept. Such an
+entry is not a map entry, so the map is left alone and the entry is written back the way the
+reference writes it, the subfields it did carry first (in number order, omitted when at
+their default) and then the bytes it carried besides. Decoding isn't compiled because it
+isn't on anyone's hot path yet; it would be the same technique if it were.
 
 It does read in place. A nested message, packed field or map entry narrows the reader to
-its own bytes for the duration (`Reader#read_nested`) instead of slicing them out into a
+its own bytes for the duration (`Reader#read_nested`, or `#read_packed` for the packed
+field, which holds scalars and so costs no nesting level) instead of slicing them out into a
 String and a second reader; fixed-width values are unpacked at an offset rather than from a
 slice; tags are split from the key without an Array for the pair. What a decode allocates
 is the messages, their containers and their Strings, and nothing else.
