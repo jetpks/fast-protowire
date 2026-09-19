@@ -58,11 +58,11 @@ metrics with twelve labels each (Ruby 4.0.7; conditions and every table on the
 
 - Encoding allocates **one object, the output**, whatever the message's size or depth;
   0.1.0 allocated 647,000 for this family. Decoding allocates only the messages,
-  containers and Strings it returns, 5x fewer than 0.1.0 and 1.7x faster.
+  containers and Strings it returns, 5x fewer than 0.1.0 and 1.3x faster.
 - Built a message at a time, the way an exposition builds series, `google-protobuf`
   leaves **504,001 native arenas and 225 MiB** behind for an 11.76 MB body and spends
-  1.66 s of every ten builds in GC; fast-protowire leaves 16.5 MiB, no arenas, and 0.26 s.
-- `google-protobuf` is native, and 10 to 20x faster per operation on an existing tree
+  1.77 s of every ten builds in GC; fast-protowire leaves 16.5 MiB, no arenas, and 0.27 s.
+- `google-protobuf` is native, and 9 to 25x faster per operation on an existing tree
   or one nested Hash. This gem trades that speed for memory that is roughly the size of
   the output; fast-prometheus's scrape path goes further and writes series with `Wire`
   directly, with no message per series at all.
