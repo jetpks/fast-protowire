@@ -8,10 +8,18 @@ module Fast
     # A cursor over an encoded message. Reads the primitive wire values and
     # skips what it is not asked to interpret.
     class Reader
+      # How deep nested messages and groups may go before the input is taken
+      # to be hostile rather than deep; the reference's limit.
+      MAX_DEPTH = 100
+
+      # Decoding is about bytes, so the input is read as bytes: a String
+      # tagged anything else is copied into a binary view once, here, rather
+      # than leaking its encoding into every slice handed out below.
       def initialize(buffer, position = 0, limit = buffer.bytesize)
-        @buffer = buffer
+        @buffer = buffer.encoding == Encoding::BINARY ? buffer : buffer.b
         @position = position
         @limit = limit
+        @depth = 0
       end
 
       attr_reader :position
@@ -22,8 +30,18 @@ module Fast
 
       # Returns [field number, wire type].
       def read_tag
-        key = read_varint
+        key = read_key
         [key >> 3, key & 0x7]
+      end
+
+      # The next field's key, the varint holding its number and wire type
+      # together. Field number 0 exists on no wire: the reference rejects it
+      # wherever it appears, and so does this.
+      def read_key
+        key = read_varint
+        raise DecodeError, "field number 0" if key < 8
+
+        key
       end
 
       # Most varints (tags, small lengths) are one byte; the loop is only
@@ -42,7 +60,9 @@ module Fast
           result |= (byte & 0x7f) << shift
           shift += 7
         end
-        result
+        # Only a tenth byte can carry bits above 64; every implementation
+        # truncates them rather than reading a wider value.
+        shift > 63 ? result & Wire::UINT64_MASK : result
       end
 
       def read_fixed32
@@ -75,9 +95,9 @@ module Fast
       end
 
       # Bounds the reader to the next length-delimited value for the block
-      # and returns the block's result: nested messages, packed fields and
-      # map entries are read in place, with no copy of their bytes.
-      def read_nested
+      # and returns the block's result, so a packed repeated field is read
+      # in place, with no copy of its bytes.
+      def read_packed
         length = read_varint
         limit = @limit
         raise DecodeError, "truncated field" if @position + length > limit
@@ -89,15 +109,38 @@ module Fast
         result
       end
 
+      # The same, for a value read by recursing into it — a nested message or
+      # a map entry — counting the nesting so deeply nested input raises
+      # rather than overflowing the VM stack. A packed field holds scalars
+      # and does not recurse, so it costs no level and reads through
+      # read_packed; the bounding is spelled out twice rather than delegated
+      # because every nested message pays for the call.
+      def read_nested
+        length = read_varint
+        limit = @limit
+        raise DecodeError, "truncated field" if @position + length > limit
+        raise DecodeError, "nested deeper than #{MAX_DEPTH}" if @depth >= MAX_DEPTH
+
+        @limit = @position + length
+        @depth += 1
+        result = yield self
+        @depth -= 1
+        @position = @limit
+        @limit = limit
+        result
+      end
+
       # Skips one value of +wire_type+ and returns its raw bytes, so unknown
-      # fields survive a decode/encode round trip.
-      def skip(wire_type)
+      # fields survive a decode/encode round trip. +number+ is the field
+      # number the value arrived under: a group is closed by its own number
+      # and nothing else. Without one, any END_GROUP closes it.
+      def skip(wire_type, number = nil)
         start = @position
         case wire_type
         when Wire::VARINT then read_varint
         when Wire::FIXED64 then read_bytes(8)
         when Wire::LENGTH_DELIMITED then read_length_delimited
-        when Wire::START_GROUP then skip_group
+        when Wire::START_GROUP then skip_group(number)
         when Wire::FIXED32 then read_bytes(4)
         else raise DecodeError, "unknown wire type #{wire_type}"
         end
@@ -114,14 +157,20 @@ module Fast
         byte
       end
 
-      def skip_group
-        loop do
-          number, wire_type = read_tag
-          return if wire_type == Wire::END_GROUP
-          raise DecodeError, "invalid group" if number.zero?
+      def skip_group(number)
+        raise DecodeError, "nested deeper than #{MAX_DEPTH}" if @depth >= MAX_DEPTH
 
-          skip(wire_type)
+        @depth += 1
+        loop do
+          inner, wire_type = read_tag
+          if wire_type == Wire::END_GROUP
+            raise DecodeError, "group #{number} closed by #{inner}" unless number.nil? || inner == number
+
+            break
+          end
+          skip(wire_type, inner)
         end
+        @depth -= 1
       end
     end
   end

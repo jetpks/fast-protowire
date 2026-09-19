@@ -12,6 +12,13 @@ module ParityCases
       big_number: 9 },
     { f_double: -0.0 },
     { f_float: -0.0 },
+    # Values a float narrows on assignment: one that loses bits, one that
+    # overflows to Infinity, one that rounds to an even significand, and one
+    # that underflows to zero and so is not written at all.
+    { f_float: 0.1, f_double: 0.1 },
+    { f_float: 3.5e38 },
+    { f_float: 16_777_217.0 },
+    { f_float: 1e-50 },
     { f_double: Float::INFINITY, f_float: -Float::INFINITY },
     { f_int32: (1 << 31) - 1, f_int64: (1 << 63) - 1 },
     { f_int32: -(1 << 31), f_sint32: (1 << 31) - 1 },
@@ -99,6 +106,39 @@ module ParityCases
     { must: 0, delta: [3, -2, 3], packed_delta: [3, -2, 3], nested: [{ must: 2 }], o_bytes: "\xff".b, o_fixed64: 1 },
     { must: 1, o_enum: :SECOND, o_string: "hello", o_default: 0, o_bool: false }
   ].freeze
+
+  # Bytes no encoder here produces but a decoder meets: varints wider than the
+  # field, a declared field arriving with a wire type it does not accept, a map
+  # entry that omits its value. Both sides decode each and must agree on the
+  # value and on the bytes it re-encodes to.
+  SCALARS_DECODE_CASES = {
+    "uint64 in ten bytes, tenth 0x7f" => "\x30#{"\xff" * 9}\x7f",
+    "uint64 in ten bytes, tenth 0x02" => "\x30#{"\x80" * 9}\x02",
+    "sint32 with bits above 32" => "\x38\x83\x80\x80\x80\x80\x20",
+    "sint64 in ten bytes, tenth 0x7f" => "\x40#{"\xff" * 9}\x7f",
+    "string field as a varint" => "\x70\x01\x18\x05",
+    "int32 field length-delimited" => "\x1a\x01\x78\x18\x05",
+    "message field as fixed32" => "\xa5\x01\x01\x02\x03\x04\x18\x05",
+    "unknown field in a child" => "\xa2\x01\x05\x9a\x06\x02\xc3\xa9\xf8\xff\xff\xff\x0f\x09"
+  }.transform_values { |bytes| bytes.b.freeze }.freeze
+
+  # Map entries, including ones carrying more than a key and a value: an
+  # undeclared subfield, or the key or value with a wire type the entry does
+  # not accept. Those are no map entry at all — both sides leave the map
+  # empty and keep the whole entry among the message's unknown fields.
+  MAPS_DECODE_CASES = {
+    "map entry holding only its key" => "\x12\x02\x08\x07",
+    "empty map entry" => "\x12\x00",
+    "im entry, value sent as a varint" => "\x12\x04\x08\x07\x10\x05",
+    "im entry, key sent length-delimited" => "\x12\x05\x0a\x01\x07\x12\x00",
+    "ss entry with an undeclared subfield" => "\x0a\x05\x0a\x01k\x18\x01",
+    "ss entry, undeclared subfields around the key" => "\x0a\x07\x18\x01\x0a\x01k\x18\x02",
+    "im entry, value then an undeclared subfield" => "\x12\x06\x08\x07\x12\x00\x18\x01",
+    "bs entry, key at its default and an undeclared subfield" => "\x22\x07\x08\x00\x12\x01v\x18\x01",
+    "si entry, value at its default and an undeclared subfield" => "\x1a\x07\x0a\x01k\x10\x00\x18\x01",
+    "ss entry, an undeclared group subfield" => "\x0a\x05\x0a\x01k\x1b\x1c",
+    "ss entry the map takes, after one it does not" => "\x0a\x05\x0a\x01k\x18\x01\x0a\x06\x0a\x01j\x12\x01v"
+  }.transform_values { |bytes| bytes.b.freeze }.freeze
 
   TREE = { label: "root", children: [{ label: "a", children: [{ label: "aa" }] }, { label: "b" }],
            parent: { label: "p" } }.freeze

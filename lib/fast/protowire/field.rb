@@ -30,9 +30,15 @@ module Fast
 
       MAP_KEY_TYPES = %i[int32 int64 uint32 uint64 sint32 sint64 fixed32 fixed64 sfixed32 sfixed64 bool string].freeze
 
-      private_constant :SCALAR_WIRE_TYPES, :INTEGER_RANGES, :FIXED_FORMATS, :PACKABLE, :MAP_KEY_TYPES
+      # The field numbers a tag can carry, less the range the specification
+      # reserves for the implementation.
+      NUMBERS = (1..(1 << 29) - 1)
+      RESERVED_NUMBERS = (19_000..19_999)
 
-      attr_reader :name, :number, :type, :rule, :oneof, :ivar, :enum
+      private_constant :SCALAR_WIRE_TYPES, :INTEGER_RANGES, :FIXED_FORMATS, :PACKABLE, :MAP_KEY_TYPES,
+                       :NUMBERS, :RESERVED_NUMBERS
+
+      attr_reader :name, :number, :type, :rule, :oneof, :ivar, :enum, :wire_type
 
       # +type+ is a scalar Symbol, an Enum module, a Message class, or a
       # String / Proc naming a Message class resolved on first use (for
@@ -40,13 +46,17 @@ module Fast
       # :repeated or :map.
       def initialize(name, type, number, rule:, owner:, packed: nil, default: nil, oneof: nil, key_type: nil)
         @name = name
-        @number = number
+        @number = validate_number(number)
         @rule = rule
         @owner = owner
         @oneof = oneof
         @ivar = :"@#{name}"
         resolve_type(type)
+        @wire_type = rule == :map ? Wire::LENGTH_DELIMITED : SCALAR_WIRE_TYPES.fetch(@type)
+        raise ArgumentError, "#{name}: a #{@type} field cannot be packed" if packed && !packable?
+
         @packed = rule == :repeated && (packed.nil? ? owner.syntax == :proto3 && packable? : packed)
+        @strict_utf8 = @type == :string && owner.syntax == :proto3
         @default = default
         @tag = Wire.tag(number, packed? ? Wire::LENGTH_DELIMITED : wire_type)
         return unless map?
@@ -55,6 +65,9 @@ module Fast
 
         @key_field = Field.new(:key, key_type, 1, rule: :optional, owner: owner)
         @value_field = Field.new(:value, type, 2, rule: :optional, owner: owner)
+        # The only two tags an entry accepts: number and wire type together.
+        @key_tag = (1 << 3) | @key_field.wire_type
+        @value_tag = (2 << 3) | @value_field.wire_type
       end
 
       def message_class
@@ -63,10 +76,6 @@ module Fast
                            when String then namespace_of(@owner).const_get(@message_ref)
                            else @message_ref
                            end
-      end
-
-      def wire_type
-        map? ? Wire::LENGTH_DELIMITED : SCALAR_WIRE_TYPES.fetch(type)
       end
 
       def repeated?
@@ -83,6 +92,13 @@ module Fast
 
       def packable?
         PACKABLE.include?(type)
+      end
+
+      # Whether a value of +wire_type+ can be read into this field: its own,
+      # plus the packed form of a packable repeated field however it was
+      # declared. Anything else is schema drift, kept as an unknown field.
+      def accepts?(wire_type)
+        wire_type == self.wire_type || (repeated? && packable? && wire_type == Wire::LENGTH_DELIMITED)
       end
 
       # Whether an unset field is distinguishable from one set to its default.
@@ -142,11 +158,13 @@ module Fast
       end
 
       # Reads one occurrence of this field into +current+ (the value already
-      # held) and returns the value to store.
-      def decode(reader, wire_type, current)
+      # held) and returns the value to store. +message+ is the message being
+      # read into, for a map entry it cannot accept: that belongs among the
+      # message's unknown fields rather than in the map.
+      def decode(reader, wire_type, current, message)
         case rule
         when :repeated then decode_repeated(reader, wire_type, current)
-        when :map then decode_map_entry(reader, wire_type, current)
+        when :map then decode_map_entry(reader, wire_type, current, message)
         else
           if type == :message && current
             expect(reader, wire_type).read_nested { |nested| current.merge_from(nested) }
@@ -157,6 +175,15 @@ module Fast
       end
 
       protected
+
+      # A second occurrence of a message field merges into the first; of
+      # anything else, replaces it. (A map's value field is read this way by
+      # the map field, which is why this is protected rather than private.)
+      def decode_singular(reader, wire_type, current)
+        return read_one(reader, wire_type) unless type == :message && current
+
+        expect(reader, wire_type).read_nested { |nested| current.merge_from(nested) }
+      end
 
       def coerce_one(value)
         case type
@@ -174,10 +201,18 @@ module Fast
         expect(reader, wire_type)
         case type
         when :message then reader.read_nested { |nested| message_class.new.merge_from(nested) }
-        when :string then reader.read_length_delimited.force_encoding(Encoding::UTF_8)
+        when :string
+          @strict_utf8 ? read_string(reader) : reader.read_length_delimited.force_encoding(Encoding::UTF_8)
         when :bytes then reader.read_length_delimited
         else read_scalar(reader)
         end
+      end
+
+      # What a map entry holds for this field when the entry omits it: the
+      # type's default, except that a message value is an empty instance, as
+      # the reference materialises one (and nil would not encode).
+      def entry_default
+        type == :message ? message_class.new : default_value
       end
 
       # Appends the tag and one value. A nested message is encoded straight
@@ -203,6 +238,13 @@ module Fast
       end
 
       private
+
+      def validate_number(number)
+        raise ArgumentError, "field number #{number} is reserved" if RESERVED_NUMBERS.cover?(number)
+        raise ArgumentError, "field number #{number} is outside #{NUMBERS}" unless NUMBERS.cover?(number)
+
+        number
+      end
 
       def resolve_type(type)
         case type
@@ -292,8 +334,7 @@ module Fast
       # Each entry is a message { key = 1; value = 2 }.
       def map_step(ivar)
         tag = @tag
-        key = @key_field.writer
-        value = @value_field.writer
+        key, value = entry_writers
         width = 1
         lambda do |message, buffer|
           message.instance_variable_get(ivar).each do |k, v|
@@ -365,10 +406,13 @@ module Fast
         value.encoding == Encoding::BINARY ? value : value.b
       end
 
+      # A +float+ holds what the wire holds: the value narrowed to single
+      # precision on assignment, as the reference narrows it, so what is
+      # read back is what a decode of the encoding reads.
       def coerce_float(value)
         raise ::TypeError, "#{name} expects a number, got #{value.class}" unless value.is_a?(Numeric)
 
-        value.to_f
+        type == :float ? [value.to_f].pack("e").unpack1("e") : value.to_f
       end
 
       def coerce_bool(value)
@@ -413,28 +457,62 @@ module Fast
 
       def decode_repeated(reader, wire_type, values)
         if packable? && wire_type == Wire::LENGTH_DELIMITED
-          reader.read_nested { |packed| values << read_scalar(packed) until packed.eof? }
+          reader.read_packed { |packed| values << read_scalar(packed) until packed.eof? }
         else
           values << read_one(reader, wire_type)
         end
         values
       end
 
-      def decode_map_entry(reader, wire_type, hash)
+      # An entry the map accepts holds its key, its value, or both; one that
+      # carries anything else — an undeclared subfield, or the key or value
+      # with a wire type the entry does not accept — is not a map entry at
+      # all. The reference keeps such an entry among the parent message's
+      # unknown fields and leaves the map alone, so this does too.
+      def decode_map_entry(reader, wire_type, hash, message)
         expect(reader, wire_type).read_nested do |entry|
-          key = @key_field.default_value
-          value = @value_field.default_value
+          key = nil
+          value = nil
+          unknown = nil
           until entry.eof?
-            tag = entry.read_varint
-            case tag >> 3
-            when 1 then key = @key_field.read_one(entry, tag & 0x7)
-            when 2 then value = @value_field.decode(entry, tag & 0x7, value)
-            else entry.skip(tag & 0x7)
+            tag = entry.read_key
+            case tag
+            when @key_tag then key = @key_field.read_one(entry, tag & 0x7)
+            when @value_tag then value = @value_field.decode_singular(entry, tag & 0x7, value)
+            else
+              Wire.append_varint(unknown ||= String.new, tag)
+              unknown << entry.skip(tag & 0x7, tag >> 3)
             end
           end
-          hash[key] = value
+          if unknown
+            keep_entry(message, key, value, unknown)
+          else
+            # An absent key or value reads as its type's default, an empty
+            # message for a message-typed value, as the reference
+            # materialises one. (Only nil is absent: false is a bool key.)
+            hash[key.nil? ? @key_field.default_value : key] = value.nil? ? @value_field.entry_default : value
+          end
         end
         hash
+      end
+
+      # A rejected entry, into the message's unknown fields (its own buffer,
+      # made here when the message has none yet) and written the way the
+      # reference writes one: the subfields it did carry, in number order and
+      # omitted when they are at their default — a message value is written
+      # whenever it was there — then the bytes it carried besides.
+      def keep_entry(message, key, value, unknown)
+        buffer = message.unknown_fields || message.instance_variable_set(:@unknown_fields, String.new)
+        write_key, write_value = entry_writers
+        Wire.append_length_delimited_from(buffer, @tag) do |b|
+          write_key.call(b, key) unless key.nil? || @key_field.omit?(key)
+          write_value.call(b, value) unless value.nil? || @value_field.omit?(value)
+          b << unknown
+        end
+      end
+
+      def entry_writers
+        @entry_writers ||= [@key_field.writer, @value_field.writer]
       end
 
       def expect(reader, wire_type)
@@ -450,11 +528,21 @@ module Fast
         when :int64 then signed(reader.read_varint, 64)
         when :uint32 then reader.read_varint & 0xFFFF_FFFF
         when :uint64 then reader.read_varint
-        when :sint32, :sint64 then Wire.unzigzag(reader.read_varint)
+        when :sint32 then Wire.unzigzag(reader.read_varint & 0xFFFF_FFFF)
+        when :sint64 then Wire.unzigzag(reader.read_varint)
         when :bool then reader.read_varint != 0
         when :double, :fixed64, :sfixed64 then reader.read_fixed(FIXED_FORMATS.fetch(type), 8)
         else reader.read_fixed(FIXED_FORMATS.fetch(type), 4)
         end
+      end
+
+      # proto3 requires a parser to reject a string field that is not valid
+      # UTF-8; proto2 does not, and the reference keeps it.
+      def read_string(reader)
+        string = reader.read_length_delimited.force_encoding(Encoding::UTF_8)
+        raise DecodeError, "#{name}: string is not valid UTF-8" if @strict_utf8 && !string.valid_encoding?
+
+        string
       end
 
       def signed(value, bits)
