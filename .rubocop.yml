@@ -1,0 +1,23 @@
+AllCops:
+  TargetRubyVersion: 3.3
+  NewCops: disable
+  SuggestExtensions: false
+  Exclude:
+    - fixtures/pb/**/*
+    - vendor/**/*
+Layout/LineLength:
+  Max: 120
+Style/Documentation:
+  Enabled: false
+Metrics:
+  Enabled: false
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+Bundler/GemFilename:
+  Enabled: false
+Gemspec/OrderedDependencies:
+  Enabled: false
+Bundler/OrderedGems:
+  Enabled: false
+Style/MixinUsage:
+  Enabled: false

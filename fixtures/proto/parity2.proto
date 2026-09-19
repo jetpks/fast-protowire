@@ -1,0 +1,23 @@
+syntax = "proto2";
+
+package parity2;
+
+enum Mode {
+  FIRST = 5;
+  SECOND = 6;
+}
+
+message Legacy {
+  optional int32 o_int32 = 1;
+  optional string o_string = 2 [default = "hello"];
+  optional int32 o_default = 3 [default = 42];
+  optional Mode o_enum = 4;
+  optional double o_double = 5;
+  optional bool o_bool = 6 [default = true];
+  required int32 must = 7;
+  repeated sint64 delta = 8;
+  repeated sint64 packed_delta = 9 [packed = true];
+  repeated Legacy nested = 10;
+  optional bytes o_bytes = 11;
+  optional fixed64 o_fixed64 = 12;
+}
