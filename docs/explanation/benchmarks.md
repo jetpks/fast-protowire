@@ -21,7 +21,7 @@ decode leaves behind, and what the garbage collector then has to do about it.
 ## Since 0.1.0
 
 The same family, encoded, built-then-encoded, and decoded, on 0.1.0 and on this version
-(5 timed calls with GC on; objects are one call):
+(`benchmark/since.rb`: 5 timed calls with GC on; objects are one call):
 
 | operation | 0.1.0 | now |
 |---|---|---|
@@ -151,6 +151,7 @@ of warmup; objects per call are `GC.stat`, exact:
 BENCH_QUICK=1 bundle exec ruby benchmark/messages.rb   # 5,000 metrics, about a minute
 bundle exec ruby benchmark/messages.rb                 # 36,000 metrics, about ten minutes
 METRICS=n bundle exec ruby benchmark/messages.rb       # pick the main size
+bundle exec ruby benchmark/since.rb                    # the Since 0.1.0 rows, about a minute
 ```
 
 ## Key takeaways
