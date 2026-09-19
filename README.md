@@ -5,8 +5,10 @@ a message's fields, get `encode` and `decode` for exactly those bytes.
 
 It is not a replacement for `google-protobuf`. There are no descriptors,
 no reflection, no JSON mapping and no generated code. It exists for
-libraries that emit or read a fixed, known schema and want the cost of that
-to be the bytes, not a native message object per field.
+libraries that emit or read a fixed, known schema and want the memory cost
+of doing so to be roughly the size of the encoded output, rather than a
+native message object and arena for every field, as `google-protobuf`
+allocates.
 
 ## Installation
 
