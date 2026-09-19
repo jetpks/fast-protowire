@@ -6,4 +6,4 @@
   every scalar type, proto2 and proto3 presence, packed and unpacked
   repeated fields, maps, oneofs, nested and recursive messages, unknown
   field preservation and merge-on-decode, verified byte-for-byte against
-  `google-protobuf`.
+  `google-protobuf`. `encode` is compiled per message class.

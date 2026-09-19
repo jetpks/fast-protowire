@@ -32,7 +32,7 @@ module Fast
 
       private_constant :SCALAR_WIRE_TYPES, :INTEGER_RANGES, :FIXED_FORMATS, :PACKABLE, :MAP_KEY_TYPES
 
-      attr_reader :name, :number, :type, :rule, :oneof, :ivar
+      attr_reader :name, :number, :type, :rule, :oneof, :ivar, :enum
 
       # +type+ is a scalar Symbol, an Enum module, a Message class, or a
       # String / Proc naming a Message class resolved on first use (for
@@ -111,6 +111,23 @@ module Fast
         end
       end
 
+      # Ruby source that appends this field's value, held in the local +var+,
+      # to the local +buffer+ — one straight-line statement per field, which
+      # is what the compiled Message#encode is made of.
+      def encode_source(var, buffer, enum_ref)
+        body = case rule
+               when :repeated then if packed?
+                                     packed_source(var, buffer,
+                                                   enum_ref)
+                                   else
+                                     unpacked_source(var, buffer, enum_ref)
+                                   end
+               when :map then map_source(var, buffer, enum_ref)
+               else "if #{presence_source(var, enum_ref)}\n  #{one_source(var, buffer, enum_ref)}\nend"
+               end
+        "#{var} = #{ivar}\n#{body}"
+      end
+
       # Validates and normalizes a value the way an assignment would.
       def coerce(value)
         case rule
@@ -151,6 +168,26 @@ module Fast
       end
 
       protected
+
+      def one_source(var, buffer, enum_ref)
+        case type
+        when :message then append_bytes_source(buffer, "#{var}.encode")
+        when :string, :bytes then append_bytes_source(buffer, var)
+        else "#{buffer} << #{tag_literal}\n#{scalar_source(var, buffer, enum_ref)}"
+        end
+      end
+
+      def scalar_source(var, buffer, enum_ref)
+        wire = "::Fast::Protowire::Wire"
+        case type
+        when :int32, :int64, :uint32, :uint64 then "#{wire}.append_varint(#{buffer}, #{var})"
+        when :sint32 then "#{wire}.append_varint(#{buffer}, #{wire}.zigzag32(#{var}))"
+        when :sint64 then "#{wire}.append_varint(#{buffer}, #{wire}.zigzag64(#{var}))"
+        when :bool then "#{buffer} << (#{var} ? 1 : 0)"
+        when :enum then "#{wire}.append_varint(#{buffer}, #{var}.is_a?(Symbol) ? #{enum_ref}.resolve(#{var}) : #{var})"
+        else "[#{var}].pack(#{FIXED_FORMATS.fetch(type).inspect}, buffer: #{buffer})"
+        end
+      end
 
       def coerce_one(value)
         case type
@@ -208,6 +245,43 @@ module Fast
           @message_ref = type
         else
           raise ArgumentError, "unknown field type #{type.inspect}"
+        end
+      end
+
+      def packed_source(var, buffer, enum_ref)
+        "unless #{var}.empty?\n  payload = String.new\n" \
+          "  #{var}.each { |e| #{scalar_source('e', 'payload', enum_ref)} }\n" \
+          "  #{append_bytes_source(buffer, 'payload')}\nend"
+      end
+
+      def unpacked_source(var, buffer, enum_ref)
+        "#{var}.each { |e| #{one_source('e', buffer, enum_ref)} }"
+      end
+
+      def map_source(var, buffer, enum_ref)
+        "#{var}.each do |k, e|\n  entry = String.new\n" \
+          "  #{@key_field.one_source('k', 'entry', enum_ref)}\n  #{@value_field.one_source('e', 'entry', enum_ref)}\n" \
+          "  #{append_bytes_source(buffer, 'entry')}\nend"
+      end
+
+      def append_bytes_source(buffer, bytes)
+        "::Fast::Protowire::Wire.append_length_delimited(#{buffer}, #{tag_literal}, #{bytes})"
+      end
+
+      def tag_literal
+        "\"#{@tag.bytes.map { |b| format('\\x%02x', b) }.join}\""
+      end
+
+      # The guard that decides whether a singular field is written at all.
+      def presence_source(var, enum_ref)
+        return "!#{var}.nil?" if explicit_presence?
+
+        case type
+        when :string, :bytes then "#{var} && !#{var}.empty?"
+        when :bool then var
+        when :enum then "#{var} && (#{var}.is_a?(Symbol) ? #{enum_ref}.resolve(#{var}) : #{var}) != 0"
+        when :double, :float then "#{var} && !(#{var}.zero? && (1.0 / #{var}).positive?)"
+        else "#{var} && #{var} != #{scalar_default.inspect}"
         end
       end
 
@@ -307,9 +381,7 @@ module Fast
         return if values.empty?
 
         if packed?
-          payload = String.new
-          values.each { |v| append_scalar(payload, v) }
-          Wire.append_length_delimited(buffer, @tag, payload)
+          Wire.append_length_delimited_from(buffer, @tag) { |b| values.each { |v| append_scalar(b, v) } }
         else
           values.each { |v| encode_one(buffer, v) }
         end
@@ -317,10 +389,10 @@ module Fast
 
       def encode_map(buffer, hash)
         hash.each do |key, value|
-          entry = String.new
-          @key_field.encode_one(entry, key)
-          @value_field.encode_one(entry, value)
-          Wire.append_length_delimited(buffer, @tag, entry)
+          Wire.append_length_delimited_from(buffer, @tag) do |entry|
+            @key_field.encode_one(entry, key)
+            @value_field.encode_one(entry, value)
+          end
         end
       end
 

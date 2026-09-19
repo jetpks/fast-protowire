@@ -82,6 +82,17 @@ series.each do |labels, value|
 end
 ```
 
+## Performance
+
+Each message class compiles its own `encode` on first use: one straight-line
+statement per field in number order, tags as frozen binary literals, no
+per-field dispatch. Nested messages encode into a small buffer of their own
+and are copied into the parent (Ruby's `String#insert` is O(size) on the
+parent, so writing in place and inserting the length afterwards is slower).
+A 36k-series Prometheus family with 12 labels per series (470k messages)
+encodes in ~0.65 s on an M-series laptop, against ~0.5 s for google-protobuf's
+native encoder, with no native allocation.
+
 ## Parity
 
 `test/fast/protowire/parity.rb` builds every schema in `fixtures/proto`

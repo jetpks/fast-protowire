@@ -58,6 +58,15 @@ module Fast
         append_varint(buffer, bytes.bytesize)
         buffer << (bytes.ascii_only? ? bytes : bytes.b)
       end
+
+      # A length-delimited field whose payload the block writes into a fresh
+      # buffer. (Writing into the parent and inserting the size afterwards
+      # looks cheaper but String#insert costs O(size) on the parent.)
+      def append_length_delimited_from(buffer, tag)
+        payload = String.new
+        yield payload
+        append_length_delimited(buffer, tag, payload)
+      end
     end
   end
 end

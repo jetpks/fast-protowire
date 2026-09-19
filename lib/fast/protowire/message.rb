@@ -91,8 +91,30 @@ module Fast
           message.encode
         end
 
+        # Enum modules referenced by the compiled encoder, by field index.
+        def encoder_enums
+          @encoder_enums ||= sorted_fields.map(&:enum)
+        end
+
+        # Defines this class's own #encode: one straight-line statement per
+        # field in number order, tags as frozen binary literals, no per-field
+        # dispatch. Runs once, on the first encode after the last declaration.
+        def compile_encoder
+          @encoder_enums = nil
+          source = +"# encoding: ASCII-8BIT\n# frozen_string_literal: true\ndef encode(buffer = String.new)\n"
+          sorted_fields.each_with_index do |field, index|
+            source << field.encode_source("v#{index}", "buffer", "self.class.encoder_enums[#{index}]") << "\n"
+          end
+          source << "buffer << @unknown_fields if @unknown_fields\nbuffer\nend\n"
+          class_eval(source, "#{name || 'anonymous'}#encode", 1)
+        end
+
         def sorted_fields
           @sorted_fields ||= @fields.values.sort_by(&:number).freeze
+        end
+
+        def container_fields
+          @container_fields ||= @fields.values.select { |field| field.repeated? || field.map? }.freeze
         end
 
         private
@@ -106,6 +128,8 @@ module Fast
           @fields_by_number[number] = field
           @oneofs[@current_oneof] << name if @current_oneof
           @sorted_fields = nil
+          @container_fields = nil
+          remove_method(:encode) if instance_methods(false).include?(:encode)
           define_accessors(field)
         end
 
@@ -123,10 +147,11 @@ module Fast
         end
       end
 
+      # Scalar and message ivars stay unset until written (an unset ivar reads
+      # as nil); repeated and map fields get their container up front so it
+      # can be mutated in place.
       def initialize(attributes = nil, **keywords)
-        self.class.fields.each_value do |field|
-          instance_variable_set(field.ivar, field.repeated? || field.map? ? field.default_value : nil)
-        end
+        self.class.container_fields.each { |field| instance_variable_set(field.ivar, field.default_value) }
         @unknown_fields = nil
         (attributes || keywords).each do |name, value|
           field = self.class.fields[name.to_sym]
@@ -138,19 +163,17 @@ module Fast
 
       attr_reader :unknown_fields
 
-      # Appends this message's bytes to +buffer+ and returns it.
+      # Appends this message's bytes to +buffer+ and returns it. The first
+      # call compiles the class's own encode (see compile_encoder); this
+      # generic one is only ever reached before that.
       def encode(buffer = String.new)
-        self.class.sorted_fields.each do |field|
-          value = instance_variable_get(field.ivar)
-          next if value.nil?
-          next if !field.explicit_presence? && field.omit?(value)
-
-          field.encode(buffer, value)
-        end
-        buffer << @unknown_fields if @unknown_fields
-        buffer
+        self.class.compile_encoder
+        encode(buffer)
       end
-      alias to_proto encode
+
+      def to_proto(buffer = String.new)
+        encode(buffer)
+      end
 
       # Reads fields from +reader+ into this message (protobuf merge
       # semantics: later scalars win, repeated fields append, nested messages

@@ -81,8 +81,6 @@ describe Fast::Protowire::Message do
   end
 
   it "merges when a message is decoded from concatenated encodings" do
-    Mirror3::Scalars.new(f_int32: 1, f_string: "old", child: { f_int32: 1 }, r_unused: nil).encode
-  rescue ArgumentError
     first = Mirror3::Scalars.new(f_int32: 1, f_string: "old", child: { f_int32: 1 }).encode
     second = Mirror3::Scalars.new(f_string: "new", child: { f_string: "c" }).encode
     merged = Mirror3::Scalars.decode(first + second)
