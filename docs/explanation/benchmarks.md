@@ -76,9 +76,15 @@ builds series as it goes does:
 | fast-protowire, a message at a time | 696.711 | 2,987,902 | 16.5 | 0 | 6 minor + 0 major | 261 |
 | google-protobuf, a message at a time | 486.674 | 3,923,902 | 224.6 | 504,001 | 37 minor + 9 major | 1661 |
 
-From one Hash, `google-protobuf` is 8.6x faster and allocates six Ruby objects; the cost is
-54 MiB of native memory for an 11.76 MB body, 3.3x what fast-protowire mallocs for the
-same. A message at a time is the pattern that made this gem: every `LabelPair.new` is a
+Read the object and malloc columns together, because the two libraries put the same work
+in different places. From one Hash, `google-protobuf` hands the whole Hash to `upb`, which
+builds native structs inside one arena and creates no Ruby wrapper for any of the 504,000
+messages in it (wrappers appear lazily, as fields are read), so Ruby sees six objects and
+the cost lands in the malloc column: 54 MiB of native memory for an 11.76 MB body, 3.3x
+what fast-protowire mallocs for the same, and 8.6x faster. fast-protowire's 576,005 objects
+*are* the family: 36,000 `Metric`s, 432,000 `LabelPair`s, 36,000 `Counter`s and their label
+Arrays, ordinary small Ruby objects that come and go with a minor GC (55 ms of GC per ten
+builds against 72). A message at a time is the pattern that made this gem: every `LabelPair.new` is a
 native arena plus a Ruby wrapper registered in a process-wide object cache, so 36,000
 metrics leave 504,001 arenas and 225 MiB behind, and the collector spends 1.66 s of the ten
 calls on them. fast-protowire's messages are ordinary objects, 16.5 MiB in total, 0.26 s
@@ -150,6 +156,10 @@ METRICS=n bundle exec ruby benchmark/messages.rb       # pick the main size
 - `google-protobuf` is **10 to 20x faster** per operation on an existing tree or a single
   Hash; it is native. Choose it when speed per message is the constraint and a native
   arena per message is acceptable.
+- Ruby object counts do not see native memory. `google-protobuf` building from one Hash
+  shows six objects and **54 MiB of arena**; fast-protowire shows 576,005 objects and
+  16 MiB. The objects are the messages, and they are cheap; the arena is what the
+  collector cannot reclaim until every wrapper into it is gone.
 - Built a message at a time, `google-protobuf` costs **225 MiB and 504,001 native arenas**
   for an 11.76 MB body and 1.66 s of GC per ten builds; fast-protowire costs 16.5 MiB, no
   arenas, and 0.26 s. That is the case this gem exists for.
