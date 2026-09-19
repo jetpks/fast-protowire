@@ -116,14 +116,12 @@ module Fast
       # is what the compiled Message#encode is made of.
       def encode_source(var, buffer, enum_ref)
         body = case rule
-               when :repeated then if packed?
-                                     packed_source(var, buffer,
-                                                   enum_ref)
-                                   else
-                                     unpacked_source(var, buffer, enum_ref)
-                                   end
-               when :map then map_source(var, buffer, enum_ref)
-               else "if #{presence_source(var, enum_ref)}\n  #{one_source(var, buffer, enum_ref)}\nend"
+               when :repeated
+                 packed? ? packed_source(var, buffer, enum_ref) : unpacked_source(var, buffer, enum_ref)
+               when :map
+                 map_source(var, buffer, enum_ref)
+               else
+                 "if #{presence_source(var, enum_ref)}\n  #{one_source(var, buffer, enum_ref)}\nend"
                end
         "#{var} = #{ivar}\n#{body}"
       end
