@@ -12,6 +12,13 @@ module ParityCases
       big_number: 9 },
     { f_double: -0.0 },
     { f_float: -0.0 },
+    # Values a float narrows on assignment: one that loses bits, one that
+    # overflows to Infinity, one that rounds to an even significand, and one
+    # that underflows to zero and so is not written at all.
+    { f_float: 0.1, f_double: 0.1 },
+    { f_float: 3.5e38 },
+    { f_float: 16_777_217.0 },
+    { f_float: 1e-50 },
     { f_double: Float::INFINITY, f_float: -Float::INFINITY },
     { f_int32: (1 << 31) - 1, f_int64: (1 << 63) - 1 },
     { f_int32: -(1 << 31), f_sint32: (1 << 31) - 1 },
@@ -115,9 +122,22 @@ module ParityCases
     "unknown field in a child" => "\xa2\x01\x05\x9a\x06\x02\xc3\xa9\xf8\xff\xff\xff\x0f\x09"
   }.transform_values { |bytes| bytes.b.freeze }.freeze
 
+  # Map entries, including ones carrying more than a key and a value: an
+  # undeclared subfield, or the key or value with a wire type the entry does
+  # not accept. Those are no map entry at all — both sides leave the map
+  # empty and keep the whole entry among the message's unknown fields.
   MAPS_DECODE_CASES = {
     "map entry holding only its key" => "\x12\x02\x08\x07",
-    "empty map entry" => "\x12\x00"
+    "empty map entry" => "\x12\x00",
+    "im entry, value sent as a varint" => "\x12\x04\x08\x07\x10\x05",
+    "im entry, key sent length-delimited" => "\x12\x05\x0a\x01\x07\x12\x00",
+    "ss entry with an undeclared subfield" => "\x0a\x05\x0a\x01k\x18\x01",
+    "ss entry, undeclared subfields around the key" => "\x0a\x07\x18\x01\x0a\x01k\x18\x02",
+    "im entry, value then an undeclared subfield" => "\x12\x06\x08\x07\x12\x00\x18\x01",
+    "bs entry, key at its default and an undeclared subfield" => "\x22\x07\x08\x00\x12\x01v\x18\x01",
+    "si entry, value at its default and an undeclared subfield" => "\x1a\x07\x0a\x01k\x10\x00\x18\x01",
+    "ss entry, an undeclared group subfield" => "\x0a\x05\x0a\x01k\x1b\x1c",
+    "ss entry the map takes, after one it does not" => "\x0a\x05\x0a\x01k\x18\x01\x0a\x06\x0a\x01j\x12\x01v"
   }.transform_values { |bytes| bytes.b.freeze }.freeze
 
   TREE = { label: "root", children: [{ label: "a", children: [{ label: "aa" }] }, { label: "b" }],

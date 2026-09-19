@@ -36,24 +36,28 @@ moved. That is what the `width` hint avoids; see [How encoding works](../explana
 A cursor over encoded bytes. `Reader.new(buffer, position = 0, limit = buffer.bytesize)`.
 The buffer is read as bytes whatever it is tagged: a non-binary String is copied into a
 binary view once, on construction, so every slice below comes back binary and the input is
-left alone. `Reader::MAX_DEPTH` (100, the reference's limit) bounds how deep nested values
-and groups may go.
+left alone. `Reader::MAX_DEPTH` (100, the reference's limit) bounds how deep nested messages,
+map entries and groups may go — the values read by recursing into them. A packed field holds
+scalars and costs no level, so a packed field at depth 100 reads.
 
 | Signature | Returns | Notes |
 |---|---|---|
 | `read_tag` | `[number, wire_type]` | |
+| `read_key` | `Integer` | The tag as its raw key, number and wire type together. Field number 0 raises `DecodeError`: no field has it, and the reference rejects it wherever it appears. |
 | `read_varint` | `Integer` | Unsigned, 64 bits: a tenth byte carries only bit 64's worth and anything above is truncated, as every implementation does. |
 | `read_fixed32` / `read_fixed64` | `Integer` | Unsigned little-endian. |
 | `read_fixed(format, width)` | the unpacked value | `width` bytes as one value of the `Array#pack` `format`, read in place. |
 | `read_bytes(length)` | binary `String` | |
 | `read_length_delimited` | binary `String` | A varint length, then that many bytes. |
-| `read_nested { \|reader\| ... }` | the block's value | Bounds the reader to the next length-delimited value for the block, then continues after it. How nested messages, packed fields and map entries are read, with no copy of their bytes. Counts the nesting: past `MAX_DEPTH` it raises rather than letting the recursion overflow the VM stack. |
-| `skip(wire_type)` | binary `String` | Skips one value of `wire_type`, groups included, and returns its raw bytes. Nested groups count against `MAX_DEPTH` too. |
+| `read_packed { \|reader\| ... }` | the block's value | Bounds the reader to the next length-delimited value for the block, then continues after it, with no copy of its bytes. How a packed repeated field is read. |
+| `read_nested { \|reader\| ... }` | the block's value | The same, for a value read by recursing into it: a nested message or a map entry. Counts the nesting, so past `MAX_DEPTH` it raises rather than letting the recursion overflow the VM stack. |
+| `skip(wire_type, number = nil)` | binary `String` | Skips one value of `wire_type`, groups included, and returns its raw bytes. `number` is the field number the value arrived under: a group is closed by an `END_GROUP` carrying its own number and nothing else, and anything else raises `DecodeError`. Without one, any `END_GROUP` closes it. Nested groups count against `MAX_DEPTH` too. |
 | `eof?` | `Boolean` | |
 | `position` | `Integer` | Byte offset. |
 
 Every reader raises `Fast::Protowire::DecodeError` on truncated input, a varint longer
-than ten bytes, an unknown wire type, or nesting past `MAX_DEPTH`.
+than ten bytes, an unknown wire type, field number 0, a group closed by another number, or
+nesting past `MAX_DEPTH`.
 
 ## `Fast::Protowire::Field`
 

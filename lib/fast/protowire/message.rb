@@ -175,17 +175,21 @@ module Fast
       # semantics: later scalars win, repeated fields append, nested messages
       # merge) and returns self. A declared field arriving with a wire type
       # it does not accept is schema drift rather than corruption, so it is
-      # kept as an unknown field, as the reference does.
+      # kept as an unknown field, as the reference does; so is a map entry
+      # carrying a subfield the entry does not accept, kept whole.
       def merge_from(reader)
         until reader.eof?
           key = reader.read_varint
           wire_type = key & 0x7
-          field = self.class.fields_by_number[key >> 3]
+          number = key >> 3
+          raise DecodeError, "field number 0" if number.zero? # as Reader#read_key, inlined for the loop
+
+          field = self.class.fields_by_number[number]
           if field&.accepts?(wire_type)
-            write_field(field, field.decode(reader, wire_type, instance_variable_get(field.ivar)))
+            write_field(field, field.decode(reader, wire_type, instance_variable_get(field.ivar), self))
           else
             Wire.append_varint(@unknown_fields ||= String.new, key)
-            @unknown_fields << reader.skip(wire_type)
+            @unknown_fields << reader.skip(wire_type, number)
           end
         end
         self
@@ -200,8 +204,12 @@ module Fast
         end
       end
 
-      # Two messages are equal when every field reads the same; an implicit
-      # field set to its default is the same as one never set.
+      # Two messages are equal when every declared field reads the same; an
+      # implicit field set to its default is the same as one never set.
+      # Unknown fields are not compared, as the reference does not compare
+      # them: two messages that differ only in what they carry for fields
+      # this class never declared are the same message. Byte identity is
+      # +a.encode == b.encode+.
       def ==(other)
         other.class == self.class && comparable_values == other.comparable_values
       end
@@ -231,11 +239,10 @@ module Fast
       protected
 
       def comparable_values
-        values = self.class.fields.each_value.map do |field|
+        self.class.fields.each_value.map do |field|
           value = instance_variable_get(field.ivar)
           value.nil? && !field.explicit_presence? ? field.default_value : value
         end
-        values << @unknown_fields
       end
 
       private

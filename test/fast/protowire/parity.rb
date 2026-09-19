@@ -84,7 +84,11 @@ describe "parity with google-protobuf" do
     end
 
     ParityCases::MAPS_DECODE_CASES.each_value do |bytes|
-      expect(Mirror3::Maps.decode(bytes).encode).to be(:==, Parity3::Maps.decode(bytes).to_proto)
+      ours = Mirror3::Maps.decode(bytes)
+      theirs = Parity3::Maps.decode(bytes)
+      %i[ss si bs].each { |f| expect(ours.public_send(f)).to be(:==, theirs.public_send(f).to_h) }
+      expect(ours.im.keys).to be(:==, theirs.im.keys.to_a)
+      expect(ours.encode).to be(:==, theirs.to_proto)
     end
   end
 
