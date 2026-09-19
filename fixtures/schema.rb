@@ -81,6 +81,116 @@ module Mirror3
   end
 end
 
+# The Prometheus client model, io.prometheus.client (fixtures/proto/metrics.proto,
+# upstream client_model, proto2), with its google.protobuf.Timestamp.
+module MirrorPrometheus
+  MetricType = Fast::Protowire::Enum.define(COUNTER: 0, GAUGE: 1, SUMMARY: 2, UNTYPED: 3, HISTOGRAM: 4,
+                                            GAUGE_HISTOGRAM: 5)
+
+  class Timestamp < Fast::Protowire::Message
+    field :seconds, :int64, 1
+    field :nanos, :int32, 2
+  end
+
+  class LabelPair < Fast::Protowire::Message
+    syntax :proto2
+    optional :name, :string, 1
+    optional :value, :string, 2
+  end
+
+  class Exemplar < Fast::Protowire::Message
+    syntax :proto2
+    repeated :label, LabelPair, 1
+    optional :value, :double, 2
+    optional :timestamp, Timestamp, 3
+  end
+
+  class Gauge < Fast::Protowire::Message
+    syntax :proto2
+    optional :value, :double, 1
+  end
+
+  class Counter < Fast::Protowire::Message
+    syntax :proto2
+    optional :value, :double, 1
+    optional :exemplar, Exemplar, 2
+    optional :created_timestamp, Timestamp, 3
+  end
+
+  class Quantile < Fast::Protowire::Message
+    syntax :proto2
+    optional :quantile, :double, 1
+    optional :value, :double, 2
+  end
+
+  class Summary < Fast::Protowire::Message
+    syntax :proto2
+    optional :sample_count, :uint64, 1
+    optional :sample_sum, :double, 2
+    repeated :quantile, Quantile, 3
+    optional :created_timestamp, Timestamp, 4
+  end
+
+  class Untyped < Fast::Protowire::Message
+    syntax :proto2
+    optional :value, :double, 1
+  end
+
+  class Bucket < Fast::Protowire::Message
+    syntax :proto2
+    optional :cumulative_count, :uint64, 1
+    optional :cumulative_count_float, :double, 4
+    optional :upper_bound, :double, 2
+    optional :exemplar, Exemplar, 3
+  end
+
+  class BucketSpan < Fast::Protowire::Message
+    syntax :proto2
+    optional :offset, :sint32, 1
+    optional :length, :uint32, 2
+  end
+
+  class Histogram < Fast::Protowire::Message
+    syntax :proto2
+    optional :sample_count, :uint64, 1
+    optional :sample_count_float, :double, 4
+    optional :sample_sum, :double, 2
+    repeated :bucket, Bucket, 3
+    optional :created_timestamp, Timestamp, 15
+    optional :schema, :sint32, 5
+    optional :zero_threshold, :double, 6
+    optional :zero_count, :uint64, 7
+    optional :zero_count_float, :double, 8
+    repeated :negative_span, BucketSpan, 9
+    repeated :negative_delta, :sint64, 10
+    repeated :negative_count, :double, 11
+    repeated :positive_span, BucketSpan, 12
+    repeated :positive_delta, :sint64, 13
+    repeated :positive_count, :double, 14
+    repeated :exemplars, Exemplar, 16
+  end
+
+  class Metric < Fast::Protowire::Message
+    syntax :proto2
+    repeated :label, LabelPair, 1
+    optional :gauge, Gauge, 2
+    optional :counter, Counter, 3
+    optional :summary, Summary, 4
+    optional :untyped, Untyped, 5
+    optional :histogram, Histogram, 7
+    optional :timestamp_ms, :int64, 6
+  end
+
+  class MetricFamily < Fast::Protowire::Message
+    syntax :proto2
+    optional :name, :string, 1
+    optional :help, :string, 2
+    optional :type, MetricType, 3
+    repeated :metric, Metric, 4
+    optional :unit, :string, 5
+  end
+end
+
 module Mirror2
   Mode = Fast::Protowire::Enum.define(FIRST: 5, SECOND: 6)
 

@@ -12,3 +12,7 @@ group :test do
   # runtime dependency.
   gem "google-protobuf", "~> 4.36"
 end
+
+group :benchmark do
+  gem "benchmark-ips"
+end

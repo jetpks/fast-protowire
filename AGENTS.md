@@ -8,7 +8,9 @@ Standing context for agents working in this repository.
 bundle install
 bundle exec sus
 bundle exec rubocop
-protoc --proto_path=fixtures/proto --ruby_out=fixtures/pb fixtures/proto/*.proto   # regenerate the reference schemas
+bundle exec ruby benchmark/messages.rb   # encode, build and decode against google-protobuf; BENCH_QUICK=1 for a short run
+protoc --proto_path=fixtures/proto --proto_path=/opt/homebrew/include --ruby_out=fixtures/pb fixtures/proto/*.proto
+# regenerates the reference schemas; the second path is where protoc keeps google/protobuf/timestamp.proto
 ```
 
 ## What this is

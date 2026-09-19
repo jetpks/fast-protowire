@@ -35,14 +35,30 @@ behind the same interface if the difference ever matters.
 
 ## Buffers
 
-A nested message encodes into a small String of its own, which is then appended to the
-parent with its length prefix. Writing the child straight into the parent and inserting the
-length afterwards avoids that String, but Ruby's `String#insert` costs time proportional to
-the whole parent buffer wherever the insert lands, so on a large message it's far slower.
-Small per-message buffers and one copy each are cheap.
+A message encodes into one buffer, the one passed to `encode` or a fresh String when none is,
+and everything nested in it goes into that same buffer. A length-delimited value's prefix
+comes before bytes whose length isn't known until they are written, so the writer appends a
+placeholder for the prefix, encodes the payload in place, and fills the prefix in afterwards
+with `String#setbyte` (`Wire.reserve_length` and `Wire.close_length`, or the two together as
+`Wire.append_length_delimited_from`). When the payload turns out to need a prefix of a
+different width, the placeholder is resized with `String#bytesplice`, which moves only the
+payload's bytes.
 
-The same applies to packed repeated fields and map entries: each is written into a
-temporary buffer, then appended.
+Each writer remembers the width its last value needed and reserves that next time, so a
+repeated field whose entries are alike (every `Metric` in a family, every `LabelPair` in a
+metric) almost never resizes. The hint matters more than it looks: Ruby reallocates a String
+it grows in place to exactly its new size, and on a large buffer that reallocation, not the
+bytes moved, is what a resize costs. Nested messages, packed repeated fields and map entries
+all encode this way, so encoding allocates nothing per message: a family of 36,000 metrics
+encodes in one object, its output. The earlier design, a small String per nested message
+copied into the parent, cost an object and a copy per message and was slower.
+
+Fixed-width values are written with `Array#pack` into the buffer, one lambda per format so
+that the format is a literal: Ruby elides the temporary Array for `[value].pack(literal,
+buffer:)`, from 3.4, and only then. Text goes in with `String#append_as_bytes` on Ruby 3.4 and
+later, tag, one-byte size and payload in one call, so a UTF-8 value costs no binary copy;
+before 3.4, non-ASCII text is copied to binary first, as Ruby's encoding rules require.
+`test/fast/protowire/allocations.rb` holds these budgets.
 
 ## What is written, in what order
 
@@ -66,3 +82,9 @@ appends; of a nested message, merges into the existing one. A tag the class does
 declare is skipped by wire type (groups included) and its raw bytes kept, so `encode` can
 write it back. Decoding isn't compiled because it isn't on anyone's hot path yet; it
 would be the same technique if it were.
+
+It does read in place. A nested message, packed field or map entry narrows the reader to
+its own bytes for the duration (`Reader#read_nested`) instead of slicing them out into a
+String and a second reader; fixed-width values are unpacked at an offset rather than from a
+slice; tags are split from the key without an Array for the pair. What a decode allocates
+is the messages, their containers and their Strings, and nothing else.

@@ -23,7 +23,11 @@ module ParityCases
     { opt_int32: 0 },
     { opt_string: "" },
     { opt_double: -0.0 },
-    { big_number: 1 }
+    { big_number: 1 },
+    # Non-ASCII text and high bytes inside nested messages, and nested
+    # messages long enough for two- and three-byte length prefixes.
+    { f_string: "héllo ✓", child: { f_string: "ünïcödé", f_bytes: "\xff\x80".b, child: { f_string: "✓" } } },
+    { f_string: "x" * 200, child: { f_string: "y" * 20_000, child: { f_bytes: ("\xff" * 130).b } } }
   ].freeze
 
   REPEATED_CASES = [
@@ -33,7 +37,10 @@ module ParityCases
       r_message: [{}, { f_int32: 1 }], unpacked: [1, -1] },
     { r_int32: [0] },
     { unpacked: [0] },
-    { r_message: [{ child: { f_string: "x" } }] }
+    { r_message: [{ child: { f_string: "x" } }] },
+    # Entries whose length prefixes alternate between one and two bytes.
+    { r_message: [{ f_string: "x" * 200 }, {}, { f_string: "x" * 200 }, { f_string: "é" }], r_string: ["é", "x" * 300],
+      r_bytes: ["\xff".b], r_double: Array.new(40) { |i| i * 0.5 } }
   ].freeze
 
   CHOICE_CASES = [
@@ -43,7 +50,47 @@ module ParityCases
 
   MAP_CASES = [
     {}, { ss: { "k" => "v" } }, { ss: { "" => "" } }, { im: { 3 => { f_int32: 1 } } }, { im: { 0 => {} } },
-    { si: { "a" => -1 } }, { bs: { true => "t" } }, { bs: { false => "" } }
+    { si: { "a" => -1 } }, { bs: { true => "t" } }, { bs: { false => "" } },
+    { ss: { "ké" => "vé" } }, { ss: { "long" => "z" * 500 } }, { im: { 2 => { f_string: "x" * 200 } } }
+  ].freeze
+
+  # Maps with several entries encode equivalently, not identically: the
+  # reference orders entries its own way. Entries here alternate between
+  # one- and two-byte length prefixes.
+  MULTI_MAP_CASES = [
+    { ss: { "b" => "2", "a" => "1" }, si: { "x" => 1, "y" => 2 } },
+    { ss: { "ké" => "vé", "long" => "z" * 500, "k" => "v" } },
+    { im: { 1 => { f_string: "é" }, 2 => { f_string: "x" * 200 }, 3 => {} } }
+  ].freeze
+
+  # Families the way an exposition builds them: every metric type, labels,
+  # an exemplar with its timestamp, native-histogram spans, and a wide
+  # family whose Metric entries take two-byte length prefixes.
+  PROMETHEUS_CASES = [
+    { name: "http_requests_total", help: "requests", type: :COUNTER,
+      metric: [{ label: [{ name: "method", value: "GET" }, { name: "code", value: "200" }],
+                 counter: { value: 1027.0 } },
+               { label: [{ name: "method", value: "POST" }, { name: "code", value: "500" }],
+                 counter: { value: 3.0, exemplar: { label: [{ name: "trace_id", value: "abc" }], value: 1.0,
+                                                    timestamp: { seconds: 1_700_000_000, nanos: 5 } } },
+                 timestamp_ms: 1_700_000_000_123 }] },
+    { name: "temperature", type: :GAUGE, unit: "celsius",
+      metric: [{ label: [{ name: "room", value: "kitchen" }], gauge: { value: -0.5 } }] },
+    { name: "request_seconds", type: :HISTOGRAM,
+      metric: [{ histogram: { sample_count: 3, sample_sum: 0.75,
+                              bucket: [{ cumulative_count: 1, upper_bound: 0.1 },
+                                       { cumulative_count: 3, upper_bound: 0.5 },
+                                       { cumulative_count: 3, upper_bound: Float::INFINITY }],
+                              schema: 3, zero_threshold: 1e-128, zero_count: 1,
+                              positive_span: [{ offset: 1, length: 2 }], positive_delta: [3, -2],
+                              negative_span: [{ offset: -1, length: 1 }], negative_delta: [1] } }] },
+    { name: "payload_bytes", type: :SUMMARY,
+      metric: [{ summary: { sample_count: 2, sample_sum: 512.0,
+                            quantile: [{ quantile: 0.5, value: 200.0 }, { quantile: 0.99, value: 312.0 }] } }] },
+    { name: "wide", type: :COUNTER,
+      metric: Array.new(40) do |i|
+        { label: Array.new(4) { |l| { name: "label_#{l}", value: "value_#{l}_#{i}" } }, counter: { value: i * 0.25 } }
+      end }
   ].freeze
 
   LEGACY_CASES = [

@@ -44,11 +44,13 @@ describe "parity with google-protobuf" do
   it "encodes single map entries identically and multi-entry maps equivalently" do
     ParityCases::MAP_CASES.each { |attributes| same_message(Mirror3::Maps, Parity3::Maps, attributes) }
 
-    attributes = { ss: { "b" => "2", "a" => "1" }, si: { "x" => 1, "y" => 2 } }
-    ours = Mirror3::Maps.new(attributes)
-    theirs = Parity3::Maps.new(attributes)
-    expect(Mirror3::Maps.decode(theirs.to_proto)).to be(:==, ours)
-    expect(Parity3::Maps.decode(ours.encode)).to be(:==, theirs)
+    ParityCases::MULTI_MAP_CASES.each do |attributes|
+      ours = Mirror3::Maps.new(attributes)
+      theirs = Parity3::Maps.new(attributes)
+      expect(Mirror3::Maps.decode(theirs.to_proto)).to be(:==, ours)
+      expect(Parity3::Maps.decode(ours.encode)).to be(:==, theirs)
+      expect(Mirror3::Maps.decode(ours.encode)).to be(:==, ours)
+    end
   end
 
   it "encodes recursive messages identically" do
@@ -57,6 +59,12 @@ describe "parity with google-protobuf" do
 
   it "encodes proto2 presence, defaults and unpacked repeated fields identically" do
     ParityCases::LEGACY_CASES.each { |attributes| same_message(Mirror2::Legacy, Parity2::Legacy, attributes) }
+  end
+
+  it "encodes the Prometheus client model identically" do
+    ParityCases::PROMETHEUS_CASES.each do |attributes|
+      same_message(MirrorPrometheus::MetricFamily, Io::Prometheus::Client::MetricFamily, attributes)
+    end
   end
 
   it "preserves unknown fields through decode and encode, in the reference's order" do
