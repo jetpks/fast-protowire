@@ -47,4 +47,5 @@ The object behind each declaration, reachable through `Message.fields`. Its publ
 are `name`, `number`, `type` (a scalar Symbol, `:enum` or `:message`), `rule`
 (`:implicit`, `:optional`, `:required`, `:repeated`, `:map`), `oneof`, `enum`,
 `message_class`, `wire_type`, `packed?`, `explicit_presence?` and `default_value`. It also
-exposes `coerce(value)`, which validates and normalizes a value as assignment would.
+exposes `coerce(value)`, which validates and normalizes a value as assignment would, and
+`encoder_step`, the closure `Message.compile_encoder` composes.

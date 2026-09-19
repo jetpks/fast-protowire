@@ -91,22 +91,16 @@ module Fast
           message.encode
         end
 
-        # Enum modules referenced by the compiled encoder, by field index.
-        def encoder_enums
-          @encoder_enums ||= sorted_fields.map(&:enum)
-        end
-
-        # Defines this class's own #encode: one straight-line statement per
-        # field in number order, tags as frozen binary literals, no per-field
-        # dispatch. Runs once, on the first encode after the last declaration.
+        # Defines this class's own #encode from one step per field in number
+        # order (see Field#encoder_step). Runs once, on the first encode after
+        # the last declaration.
         def compile_encoder
-          @encoder_enums = nil
-          source = +"# encoding: ASCII-8BIT\n# frozen_string_literal: true\ndef encode(buffer = String.new)\n"
-          sorted_fields.each_with_index do |field, index|
-            source << field.encode_source("v#{index}", "buffer", "self.class.encoder_enums[#{index}]") << "\n"
+          steps = sorted_fields.map(&:encoder_step)
+          define_method(:encode) do |buffer = String.new|
+            steps.each { |step| step.call(self, buffer) }
+            buffer << @unknown_fields if @unknown_fields
+            buffer
           end
-          source << "buffer << @unknown_fields if @unknown_fields\nbuffer\nend\n"
-          class_eval(source, "#{name || 'anonymous'}#encode", 1)
         end
 
         def sorted_fields
