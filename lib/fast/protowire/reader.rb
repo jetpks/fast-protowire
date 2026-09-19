@@ -26,28 +26,40 @@ module Fast
         [key >> 3, key & 0x7]
       end
 
+      # Most varints (tags, small lengths) are one byte; the loop is only
+      # entered past it, and is a bare while because Kernel#loop costs an
+      # object per call.
       def read_varint
-        result = 0
-        shift = 0
-        loop do
-          raise DecodeError, "truncated varint" if @position >= @limit
+        byte = read_byte
+        return byte if byte < 0x80
 
-          byte = @buffer.getbyte(@position)
-          @position += 1
-          result |= (byte & 0x7f) << shift
-          return result if byte < 0x80
-
-          shift += 7
+        result = byte & 0x7f
+        shift = 7
+        while byte >= 0x80
           raise DecodeError, "varint too long" if shift > 63
+
+          byte = read_byte
+          result |= (byte & 0x7f) << shift
+          shift += 7
         end
+        result
       end
 
       def read_fixed32
-        read_bytes(4).unpack1("L<")
+        read_fixed("L<", 4)
       end
 
       def read_fixed64
-        read_bytes(8).unpack1("Q<")
+        read_fixed("Q<", 8)
+      end
+
+      # Reads +width+ bytes as one value of the pack +format+, in place.
+      def read_fixed(format, width)
+        raise DecodeError, "truncated field" if @position + width > @limit
+
+        value = @buffer.unpack1(format, offset: @position)
+        @position += width
+        value
       end
 
       def read_bytes(length)
@@ -62,14 +74,19 @@ module Fast
         read_bytes(read_varint)
       end
 
-      # A reader bounded to the next length-delimited value, for packed fields.
-      def read_packed
+      # Bounds the reader to the next length-delimited value for the block
+      # and returns the block's result: nested messages, packed fields and
+      # map entries are read in place, with no copy of their bytes.
+      def read_nested
         length = read_varint
-        raise DecodeError, "truncated packed field" if @position + length > @limit
+        limit = @limit
+        raise DecodeError, "truncated field" if @position + length > limit
 
-        reader = Reader.new(@buffer, @position, @position + length)
-        @position += length
-        reader
+        @limit = @position + length
+        result = yield self
+        @position = @limit
+        @limit = limit
+        result
       end
 
       # Skips one value of +wire_type+ and returns its raw bytes, so unknown
@@ -88,6 +105,14 @@ module Fast
       end
 
       private
+
+      def read_byte
+        raise DecodeError, "truncated varint" if @position >= @limit
+
+        byte = @buffer.getbyte(@position)
+        @position += 1
+        byte
+      end
 
       def skip_group
         loop do

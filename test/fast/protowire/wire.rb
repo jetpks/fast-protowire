@@ -45,6 +45,36 @@ describe Fast::Protowire::Wire do
     wire.append_length_delimited(buffer, wire.tag(4, wire::LENGTH_DELIMITED), "abc")
     expect(buffer).to be(:==, "\x22\x03abc".b)
   end
+
+  it "sizes varints" do
+    sizes = [0, 127, 128, 16_383, 16_384, (1 << 64) - 1, -1].map { |n| wire.varint_size(n) }
+    expect(sizes).to be(:==, [1, 1, 2, 2, 3, 10, 10])
+  end
+
+  it "appends text of any encoding as bytes and keeps the buffer binary" do
+    buffer = String.new
+    wire.append_length_delimited(buffer, wire.tag(1, wire::LENGTH_DELIMITED), "héllo")
+    wire.append_bytes(buffer, "\xff".b)
+    expect(buffer).to be(:==, "\x0a\x06h\xc3\xa9llo\xff".b)
+    expect(buffer.encoding).to be(:==, Encoding::BINARY)
+  end
+
+  it "writes a length prefix behind a payload appended in place, at whatever width the payload turns out to need" do
+    tag = wire.tag(2, wire::LENGTH_DELIMITED)
+    buffer = String.new
+    expected = String.new
+    widths = ["abc", "x" * 300, "y", "z" * 20_000].map do |payload|
+      wire.append_length_delimited(expected, tag, payload)
+      wire.append_length_delimited_from(buffer, tag) { |b| b << payload }
+    end
+    expect(widths).to be(:==, [1, 2, 1, 3])
+    expect(buffer).to be(:==, expected)
+
+    hinted = String.new
+    width = wire.append_length_delimited_from(hinted, tag, 2) { |b| b << "abc" }
+    expect(width).to be(:==, 1)
+    expect(hinted).to be(:==, "\x12\x03abc".b)
+  end
 end
 
 describe Fast::Protowire::Reader do
@@ -78,5 +108,19 @@ describe Fast::Protowire::Reader do
     expect { reader_class.new("\x22\x05ab".b).tap(&:read_tag).read_length_delimited }
       .to raise_exception(Fast::Protowire::DecodeError)
     expect { reader_class.new("\x01\x00\x00".b).read_fixed32 }.to raise_exception(Fast::Protowire::DecodeError)
+    expect { reader_class.new("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x01".b).read_varint }
+      .to raise_exception(Fast::Protowire::DecodeError)
+  end
+
+  it "bounds itself to a nested value for a block and picks up after it" do
+    reader = reader_class.new("\x02\x08\x01\x02\x00\x00\x00".b) # 2 bytes { field 1 = 1 }, then fixed32 2
+    inner = reader.read_nested { |nested| [nested.read_tag, nested.read_varint, nested.eof?] }
+    expect(inner).to be(:==, [[1, 0], 1, true])
+    expect(reader.read_fixed32).to be(:==, 2)
+    expect(reader).to be(:eof?)
+    expect { reader_class.new("\x01\x08\x01".b).read_nested { |nested| 2.times { nested.read_varint } } }
+      .to raise_exception(Fast::Protowire::DecodeError)
+    expect { reader_class.new("\x05\x01".b).read_nested { |nested| nested } }
+      .to raise_exception(Fast::Protowire::DecodeError)
   end
 end

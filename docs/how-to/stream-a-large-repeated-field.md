@@ -24,18 +24,22 @@ appended as it's produced.
    METRIC = Fast::Protowire::Wire.tag(4, Fast::Protowire::Wire::LENGTH_DELIMITED)
    ```
 
-3. Append each element with `Wire.append_length_delimited`, encoding it and discarding it
-   in the same step:
+3. Append each element with `Wire.append_length_delimited_from`, encoding it straight into
+   `buffer` behind its length prefix and discarding it in the same step:
 
    ```ruby
+   width = 1
    series.each do |labels, value|
      metric = Metric.new(label: labels, counter: { value: value })
-     Fast::Protowire::Wire.append_length_delimited(buffer, METRIC, metric.encode)
+     width = Fast::Protowire::Wire.append_length_delimited_from(buffer, METRIC, width) { |b| metric.encode(b) }
    end
    ```
 
    `buffer` now holds bytes identical to `MetricFamily.new(name:, type:, metric: [...all
-   of them...]).encode`, but at no point did more than one `Metric` exist.
+   of them...]).encode`, but at no point did more than one `Metric` exist, and nothing
+   was allocated per element beyond the `Metric` itself. The returned `width` is the size
+   of the last length prefix; passing it back in means the prefix is reserved at the right
+   width for the next element and almost never resized.
 
 4. If the result is itself a field of an outer message, prefix it the same way, or, for
    a delimited stream such as Prometheus exposition, prefix its length alone:
@@ -48,10 +52,9 @@ appended as it's produced.
 
 ## Notes
 
-Keep each element's encode in its own small buffer and copy it, as
-`append_length_delimited` does. Writing the element into the big buffer and inserting the
-length prefix afterwards is slower: `String#insert` costs time proportional to the whole
-buffer, wherever the insert lands.
+This is how `encode` itself writes every nested message, packed field and map entry:
+reserve the prefix, append the payload, fill the prefix in. [How encoding works](../explanation/encoding.md#buffers)
+explains the width hint and why it matters on a large buffer.
 
-fast-prometheus renders its protobuf exposition exactly this way; see its
-`Formats::Protobuf`.
+fast-prometheus renders its protobuf exposition this way, writing each series' bytes with
+`Wire` directly rather than building a `Metric` for it; see its `Formats::Protobuf`.

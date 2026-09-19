@@ -141,14 +141,6 @@ module Fast
         end
       end
 
-      def encode(buffer, value)
-        case rule
-        when :repeated then encode_repeated(buffer, value)
-        when :map then encode_map(buffer, value)
-        else encode_one(buffer, value)
-        end
-      end
-
       # Reads one occurrence of this field into +current+ (the value already
       # held) and returns the value to store.
       def decode(reader, wire_type, current)
@@ -157,7 +149,7 @@ module Fast
         when :map then decode_map_entry(reader, wire_type, current)
         else
           if type == :message && current
-            current.merge_from(Reader.new(expect(reader, wire_type).read_length_delimited))
+            expect(reader, wire_type).read_nested { |nested| current.merge_from(nested) }
           else
             read_one(reader, wire_type)
           end
@@ -178,23 +170,35 @@ module Fast
         end
       end
 
-      def encode_one(buffer, value)
-        case type
-        when :message then Wire.append_length_delimited(buffer, @tag, value.encode)
-        when :string, :bytes then Wire.append_length_delimited(buffer, @tag, value)
-        else
-          buffer << @tag
-          append_scalar(buffer, value)
-        end
-      end
-
       def read_one(reader, wire_type)
         expect(reader, wire_type)
         case type
-        when :message then message_class.decode(reader.read_length_delimited)
+        when :message then reader.read_nested { |nested| message_class.new.merge_from(nested) }
         when :string then reader.read_length_delimited.force_encoding(Encoding::UTF_8)
         when :bytes then reader.read_length_delimited
         else read_scalar(reader)
+        end
+      end
+
+      # Appends the tag and one value. A nested message is encoded straight
+      # into the buffer behind a length prefix filled in after it, with no
+      # buffer of its own; +width+ carries the prefix width from one value
+      # to the next, a hint shared by every encode of the field. (A map's
+      # key and value fields build the entry writer together, which is why
+      # this is protected rather than private.)
+      def writer
+        tag = @tag
+        case type
+        when :message
+          width = 1
+          ->(buffer, value) { width = Wire.append_length_delimited_from(buffer, tag, width) { |b| value.encode(b) } }
+        when :string, :bytes then ->(buffer, value) { Wire.append_length_delimited(buffer, tag, value) }
+        else
+          scalar = scalar_writer
+          lambda do |buffer, value|
+            buffer << tag
+            scalar.call(buffer, value)
+          end
         end
       end
 
@@ -265,17 +269,19 @@ module Fast
         end
       end
 
+      # Packed: every value bare, behind one tag and length.
       def repeated_step(ivar)
         if packed?
           tag = @tag
           scalar = scalar_writer
+          width = 1
           lambda do |message, buffer|
             values = message.instance_variable_get(ivar)
             next if values.empty?
 
-            payload = String.new
-            values.each { |value| scalar.call(payload, value) }
-            Wire.append_length_delimited(buffer, tag, payload)
+            width = Wire.append_length_delimited_from(buffer, tag, width) do |b|
+              values.each { |value| scalar.call(b, value) }
+            end
           end
         else
           write = writer
@@ -283,36 +289,27 @@ module Fast
         end
       end
 
+      # Each entry is a message { key = 1; value = 2 }.
       def map_step(ivar)
         tag = @tag
         key = @key_field.writer
         value = @value_field.writer
+        width = 1
         lambda do |message, buffer|
           message.instance_variable_get(ivar).each do |k, v|
-            entry = String.new
-            key.call(entry, k)
-            value.call(entry, v)
-            Wire.append_length_delimited(buffer, tag, entry)
+            width = Wire.append_length_delimited_from(buffer, tag, width) do |b|
+              key.call(b, k)
+              value.call(b, v)
+            end
           end
         end
       end
 
-      # Appends the tag and one value.
-      def writer
-        tag = @tag
-        case type
-        when :message then ->(buffer, value) { Wire.append_length_delimited(buffer, tag, value.encode) }
-        when :string, :bytes then ->(buffer, value) { Wire.append_length_delimited(buffer, tag, value) }
-        else
-          scalar = scalar_writer
-          lambda do |buffer, value|
-            buffer << tag
-            scalar.call(buffer, value)
-          end
-        end
-      end
+      # -- writers -----------------------------------------------------------
 
       # Appends one scalar value without its tag, as packed fields need.
+      # Fixed-width types get a lambda each so the pack format is a literal:
+      # Ruby elides the Array in [value].pack(literal, buffer:), and only then.
       def scalar_writer
         case type
         when :int32, :int64, :uint32, :uint64 then ->(buffer, value) { Wire.append_varint(buffer, value) }
@@ -322,9 +319,12 @@ module Fast
         when :enum
           enum = @enum
           ->(buffer, value) { Wire.append_varint(buffer, value.is_a?(Symbol) ? enum.resolve(value) : value) }
-        else
-          format = FIXED_FORMATS.fetch(type)
-          ->(buffer, value) { [value].pack(format, buffer: buffer) }
+        when :double then ->(buffer, value) { [value].pack("E", buffer: buffer) }
+        when :float then ->(buffer, value) { [value].pack("e", buffer: buffer) }
+        when :fixed32 then ->(buffer, value) { [value].pack("L<", buffer: buffer) }
+        when :sfixed32 then ->(buffer, value) { [value].pack("l<", buffer: buffer) }
+        when :fixed64 then ->(buffer, value) { [value].pack("Q<", buffer: buffer) }
+        when :sfixed64 then ->(buffer, value) { [value].pack("q<", buffer: buffer) }
         end
       end
 
@@ -409,44 +409,11 @@ module Fast
         integer
       end
 
-      # -- encoding ----------------------------------------------------------
-
-      def encode_repeated(buffer, values)
-        return if values.empty?
-
-        if packed?
-          Wire.append_length_delimited_from(buffer, @tag) { |b| values.each { |v| append_scalar(b, v) } }
-        else
-          values.each { |v| encode_one(buffer, v) }
-        end
-      end
-
-      def encode_map(buffer, hash)
-        hash.each do |key, value|
-          Wire.append_length_delimited_from(buffer, @tag) do |entry|
-            @key_field.encode_one(entry, key)
-            @value_field.encode_one(entry, value)
-          end
-        end
-      end
-
-      def append_scalar(buffer, value)
-        case type
-        when :int32, :int64, :uint32, :uint64 then Wire.append_varint(buffer, value)
-        when :sint32 then Wire.append_varint(buffer, Wire.zigzag32(value))
-        when :sint64 then Wire.append_varint(buffer, Wire.zigzag64(value))
-        when :bool then buffer << (value ? 1 : 0)
-        when :enum then Wire.append_varint(buffer, enum_number(value))
-        else buffer << [value].pack(FIXED_FORMATS.fetch(type))
-        end
-      end
-
       # -- decoding ----------------------------------------------------------
 
       def decode_repeated(reader, wire_type, values)
         if packable? && wire_type == Wire::LENGTH_DELIMITED
-          packed = reader.read_packed
-          values << read_scalar(packed) until packed.eof?
+          reader.read_nested { |packed| values << read_scalar(packed) until packed.eof? }
         else
           values << read_one(reader, wire_type)
         end
@@ -454,18 +421,19 @@ module Fast
       end
 
       def decode_map_entry(reader, wire_type, hash)
-        entry = Reader.new(expect(reader, wire_type).read_length_delimited)
-        key = @key_field.default_value
-        value = @value_field.default_value
-        until entry.eof?
-          number, entry_wire_type = entry.read_tag
-          case number
-          when 1 then key = @key_field.read_one(entry, entry_wire_type)
-          when 2 then value = @value_field.decode(entry, entry_wire_type, value)
-          else entry.skip(entry_wire_type)
+        expect(reader, wire_type).read_nested do |entry|
+          key = @key_field.default_value
+          value = @value_field.default_value
+          until entry.eof?
+            tag = entry.read_varint
+            case tag >> 3
+            when 1 then key = @key_field.read_one(entry, tag & 0x7)
+            when 2 then value = @value_field.decode(entry, tag & 0x7, value)
+            else entry.skip(tag & 0x7)
+            end
           end
+          hash[key] = value
         end
-        hash[key] = value
         hash
       end
 
@@ -484,8 +452,8 @@ module Fast
         when :uint64 then reader.read_varint
         when :sint32, :sint64 then Wire.unzigzag(reader.read_varint)
         when :bool then reader.read_varint != 0
-        when :double, :fixed64, :sfixed64 then reader.read_bytes(8).unpack1(FIXED_FORMATS.fetch(type))
-        else reader.read_bytes(4).unpack1(FIXED_FORMATS.fetch(type))
+        when :double, :fixed64, :sfixed64 then reader.read_fixed(FIXED_FORMATS.fetch(type), 8)
+        else reader.read_fixed(FIXED_FORMATS.fetch(type), 4)
         end
       end
 
@@ -493,9 +461,6 @@ module Fast
         value &= (1 << bits) - 1
         value >= (1 << (bits - 1)) ? value - (1 << bits) : value
       end
-
-      # A map's key and value fields build the entry writer together.
-      protected :writer
     end
   end
 end

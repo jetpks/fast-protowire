@@ -143,11 +143,12 @@ module Fast
 
       # Scalar and message ivars stay unset until written (an unset ivar reads
       # as nil); repeated and map fields get their container up front so it
-      # can be mutated in place.
-      def initialize(attributes = nil, **keywords)
+      # can be mutated in place. +attributes+ is a Hash, or the keywords a
+      # caller writes instead of one.
+      def initialize(attributes = nil)
         self.class.container_fields.each { |field| instance_variable_set(field.ivar, field.default_value) }
         @unknown_fields = nil
-        (attributes || keywords).each do |name, value|
+        attributes&.each do |name, value|
           field = self.class.fields[name.to_sym]
           raise ArgumentError, "unknown field #{name.inspect} for #{self.class}" unless field
 
@@ -174,12 +175,14 @@ module Fast
       # merge) and returns self.
       def merge_from(reader)
         until reader.eof?
-          number, wire_type = reader.read_tag
-          field = self.class.fields_by_number[number]
+          key = reader.read_varint
+          wire_type = key & 0x7
+          field = self.class.fields_by_number[key >> 3]
           if field
             write_field(field, field.decode(reader, wire_type, instance_variable_get(field.ivar)))
           else
-            (@unknown_fields ||= String.new) << Wire.varint((number << 3) | wire_type) << reader.skip(wire_type)
+            Wire.append_varint(@unknown_fields ||= String.new, key)
+            @unknown_fields << reader.skip(wire_type)
           end
         end
         self

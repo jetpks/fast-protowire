@@ -73,6 +73,15 @@ describe Fast::Protowire::Message do
     expect(a.inspect).to be(:==, '#<Mirror3::Tree label: "root", children: [#<Mirror3::Tree label: "a">]>')
   end
 
+  it "appends to a caller's buffer, and takes attributes as a Hash or as keywords" do
+    scalars = Mirror3::Scalars.new(f_int32: 1)
+    buffer = "prefix".b
+    expect(scalars.encode(buffer)).to be(:equal?, buffer)
+    expect(buffer).to be(:==, "prefix\x18\x01".b)
+    expect(Mirror3::Scalars.new({ f_int32: 1 })).to be(:==, scalars)
+    expect(Mirror3::Scalars.new).to be(:==, Mirror3::Scalars.new({}))
+  end
+
   it "accepts packed and unpacked encodings of any repeated scalar" do
     unpacked = "\x10\x01\x10\x02".b # r_int32 (2) as two varints
     expect(Mirror3::Repeated.decode(unpacked).r_int32).to be(:==, [1, 2])

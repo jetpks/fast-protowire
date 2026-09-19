@@ -6,3 +6,4 @@ $LOAD_PATH.unshift(File.expand_path("pb", __dir__)) unless $LOAD_PATH.include?(F
 require "google/protobuf"
 require "parity3_pb"
 require "parity2_pb"
+require "metrics_pb"
