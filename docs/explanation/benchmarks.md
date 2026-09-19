@@ -27,7 +27,7 @@ The same family, encoded, built-then-encoded, and decoded, on 0.1.0 and on this 
 |---|---|---|
 | encode | 0.312 s, 647,240 objects | 0.303 s, 2 objects |
 | build from a Hash, encode | 0.644 s, 1,727,244 objects | 0.644 s, 576,004 objects |
-| decode | 1.311 s, 7,128,016 objects | 0.995 s, 1,404,005 objects |
+| decode | 1.311 s, 7,128,016 objects | 0.801 s, 1,404,005 objects |
 
 Encoding allocated a String per nested message plus a binary copy of it whenever it held a
 byte over 127 (every `Counter`, every `Metric`), and an Array per `double`. It now writes
@@ -39,10 +39,10 @@ per `read_varint` (a `Kernel#loop` block). It now reads in place; what remains i
 messages, their containers and their Strings. `test/fast/protowire/allocations.rb` holds
 these budgets on every supported Ruby.
 
-0.3.0 gave part of the decode speedup back: the same family decodes in 0.995 s here where
-0.2.0 took 0.808 s, the price of checking every field's wire type, rejecting field number 0
-and counting the nesting, on every field of every nested message. What a decode allocates
-did not move.
+0.3.0 checks every field's wire type, rejects field number 0 and counts the nesting on
+every field of every nested message, and decodes the family in 0.801 s where 0.2.0 takes
+0.784 s in the same session: a field's wire type is computed once, when it is declared,
+rather than on every read, which pays for the checks. What a decode allocates did not move.
 
 ## Encode, by shape
 
@@ -107,25 +107,25 @@ The family's bytes back into messages, and then read through, every label's valu
 
 | library | ms/call | objects/call | malloc MiB/call | live arenas after | GC runs (10 calls) | GC ms |
 |---|---|---|---|---|---|---|
-| fast-protowire, decode | 960.521 | 1,404,006 | 5.7 | 0 | 2 minor + 0 major | 68 |
-| google-protobuf, decode | 13.81 | 4 | 43.1 | 1 | 12 minor + 0 major | 32 |
-| fast-protowire, decode and read every label | 984.825 | 1,404,009 | 5.7 | 0 | 2 minor + 0 major | 91 |
-| google-protobuf, decode and read every label | 232.297 | 1,404,012 | 74.9 | 1 | 11 minor + 0 major | 360 |
+| fast-protowire, decode | 785.399 | 1,404,006 | 5.7 | 0 | 2 minor + 0 major | 67 |
+| google-protobuf, decode | 13.249 | 4 | 43.1 | 1 | 12 minor + 0 major | 30 |
+| fast-protowire, decode and read every label | 807.468 | 1,404,009 | 5.7 | 0 | 2 minor + 0 major | 86 |
+| google-protobuf, decode and read every label | 225.627 | 1,404,012 | 74.9 | 1 | 11 minor + 0 major | 349 |
 
-`google-protobuf` decodes lazily: 14 ms parses the body into an arena, and Ruby objects
-appear as fields are read. Read every label and it is 232 ms, the same 1.4 million objects
+`google-protobuf` decodes lazily: 13 ms parses the body into an arena, and Ruby objects
+appear as fields are read. Read every label and it is 226 ms, the same 1.4 million objects
 fast-protowire made up front, and 75 MiB against 5.7. fast-protowire's decode is eager and
-4.2x slower for the read-through case; it allocates exactly the messages, containers and
+3.6x slower for the read-through case; it allocates exactly the messages, containers and
 Strings it hands back.
 
 ## By size
 
 | metrics | bytes | fast encode ms | objects | google encode ms | objects | fast decode ms | google decode ms |
 |---|---|---|---|---|---|---|---|
-| 1,000 | 0.32 MB | 7.739 | 1 | 0.181 | 2 | 25.602 | 0.289 |
-| 10,000 | 3.18 MB | 79.044 | 1 | 1.834 | 2 | 257.743 | 3.492 |
-| 36,000 | 11.76 MB | 283.427 | 1 | 7.482 | 2 | 934.776 | 14.568 |
-| 100,000 | 32.88 MB | 789.745 | 1 | 20.55 | 2 | 2610.751 | 99.064 |
+| 1,000 | 0.32 MB | 7.645 | 1 | 0.181 | 2 | 22.094 | 0.297 |
+| 10,000 | 3.18 MB | 78.525 | 1 | 1.883 | 2 | 215.138 | 3.576 |
+| 36,000 | 11.76 MB | 279.422 | 1 | 7.41 | 2 | 785.123 | 14.576 |
+| 100,000 | 32.88 MB | 776.899 | 1 | 20.499 | 2 | 2185.772 | 93.183 |
 
 Every column is linear in the number of metrics, and encoding allocates one object at
 every size. The length-prefix hint (see [Buffers](encoding.md#buffers)) is what keeps the
@@ -139,10 +139,10 @@ of warmup; objects per call are `GC.stat`, exact:
 
 | operation | fast-protowire i/s | google-protobuf i/s | fast / google | fast-protowire objects/call | google-protobuf objects/call |
 |---|---|---|---|---|---|
-| LabelPair encode | 2.52M | 8.36M | 0.3x | 1.0 | 2.0 |
-| Metric encode (12 labels) | 0.13M | 2.38M | 0.05x | 1.0 | 2.0 |
-| LabelPair decode | 0.73M | 2.21M | 0.33x | 4.0 | 3.0 |
-| Metric decode (12 labels) | 0.04M | 1.08M | 0.04x | 40.0 | 3.0 |
+| LabelPair encode | 2.56M | 8.11M | 0.32x | 1.0 | 2.0 |
+| Metric encode (12 labels) | 0.13M | 2.41M | 0.05x | 1.0 | 2.0 |
+| LabelPair decode | 0.94M | 2.26M | 0.41x | 4.0 | 3.0 |
+| Metric decode (12 labels) | 0.05M | 1.07M | 0.04x | 40.0 | 3.0 |
 | Metric build from Hash + encode | 0.06M | 0.41M | 0.15x | 17.0 | 5.0 |
 
 ## Reproducing
@@ -157,9 +157,8 @@ METRICS=n bundle exec ruby benchmark/messages.rb       # pick the main size
 
 - Encoding a declared message allocates **one object, its output**, at any size and depth;
   0.1.0 allocated one per nested message and one per `double`, 647,000 for this family.
-- Decoding allocates only what it returns: **5x fewer objects** than 0.1.0 and 1.3x faster.
-  It was 1.6x faster on 0.2.0; 0.3.0 spent part of that on checking every field's wire type
-  and bounding the nesting.
+- Decoding allocates only what it returns: **5x fewer objects** than 0.1.0 and 1.6x faster,
+  with 0.3.0's wire-type, field-number and depth checks on every field.
 - `google-protobuf` is **9 to 25x faster** per operation on an existing tree or a single
   Hash; it is native. Choose it when speed per message is the constraint and a native
   arena per message is acceptable.

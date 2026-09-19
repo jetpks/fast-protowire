@@ -49,14 +49,14 @@
   under, `skip(wire_type, number = nil)`, so a group is closed only by its
   own number; `Field#accepts?(wire_type)`, `Wire.binary_buffer` and
   `Wire::UINT64_MASK` are public.
-- Decoding pays for the guards: the 36,000-metric family decodes in 0.995 s
-  where 0.2.0 took 0.808 s on the same machine and Ruby (4.0.7, five timed
-  calls), the cost of the per-field wire-type check, the field-number-0
-  guard and the depth counting on every field of every nested message. What
-  it allocates is unchanged, 1,404,005 objects for that family and one
-  object to encode it, and so are the budgets in
-  `test/fast/protowire/allocations.rb`; the benchmarks page carries the
-  re-measured tables.
+- Decoding costs what it did on 0.2.0, guards included: the 36,000-metric
+  family decodes in 0.801 s where 0.2.0 takes 0.784 s on the same machine
+  and Ruby (4.0.7, five timed calls, same session). A field's wire type is
+  computed once, when the field is declared, rather than on every read,
+  where the per-field check had been paying for it twice. What it allocates
+  is unchanged, 1,404,005 objects for that family and one object to encode
+  it, and so are the budgets in `test/fast/protowire/allocations.rb`; the
+  benchmarks page carries the re-measured tables.
 
 ## 0.2.0
 

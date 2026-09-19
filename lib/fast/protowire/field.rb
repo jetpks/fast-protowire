@@ -38,7 +38,7 @@ module Fast
       private_constant :SCALAR_WIRE_TYPES, :INTEGER_RANGES, :FIXED_FORMATS, :PACKABLE, :MAP_KEY_TYPES,
                        :NUMBERS, :RESERVED_NUMBERS
 
-      attr_reader :name, :number, :type, :rule, :oneof, :ivar, :enum
+      attr_reader :name, :number, :type, :rule, :oneof, :ivar, :enum, :wire_type
 
       # +type+ is a scalar Symbol, an Enum module, a Message class, or a
       # String / Proc naming a Message class resolved on first use (for
@@ -52,6 +52,7 @@ module Fast
         @oneof = oneof
         @ivar = :"@#{name}"
         resolve_type(type)
+        @wire_type = rule == :map ? Wire::LENGTH_DELIMITED : SCALAR_WIRE_TYPES.fetch(@type)
         raise ArgumentError, "#{name}: a #{@type} field cannot be packed" if packed && !packable?
 
         @packed = rule == :repeated && (packed.nil? ? owner.syntax == :proto3 && packable? : packed)
@@ -75,10 +76,6 @@ module Fast
                            when String then namespace_of(@owner).const_get(@message_ref)
                            else @message_ref
                            end
-      end
-
-      def wire_type
-        map? ? Wire::LENGTH_DELIMITED : SCALAR_WIRE_TYPES.fetch(type)
       end
 
       def repeated?
@@ -168,7 +165,12 @@ module Fast
         case rule
         when :repeated then decode_repeated(reader, wire_type, current)
         when :map then decode_map_entry(reader, wire_type, current, message)
-        else decode_singular(reader, wire_type, current)
+        else
+          if type == :message && current
+            expect(reader, wire_type).read_nested { |nested| current.merge_from(nested) }
+          else
+            read_one(reader, wire_type)
+          end
         end
       end
 
@@ -199,7 +201,8 @@ module Fast
         expect(reader, wire_type)
         case type
         when :message then reader.read_nested { |nested| message_class.new.merge_from(nested) }
-        when :string then read_string(reader)
+        when :string
+          @strict_utf8 ? read_string(reader) : reader.read_length_delimited.force_encoding(Encoding::UTF_8)
         when :bytes then reader.read_length_delimited
         else read_scalar(reader)
         end
