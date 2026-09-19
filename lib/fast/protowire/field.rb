@@ -111,19 +111,18 @@ module Fast
         end
       end
 
-      # Ruby source that appends this field's value, held in the local +var+,
-      # to the local +buffer+ — one straight-line statement per field, which
-      # is what the compiled Message#encode is made of.
-      def encode_source(var, buffer, enum_ref)
-        body = case rule
-               when :repeated
-                 packed? ? packed_source(var, buffer, enum_ref) : unpacked_source(var, buffer, enum_ref)
-               when :map
-                 map_source(var, buffer, enum_ref)
-               else
-                 "if #{presence_source(var, enum_ref)}\n  #{one_source(var, buffer, enum_ref)}\nend"
-               end
-        "#{var} = #{ivar}\n#{body}"
+      # A step of the compiled Message#encode: a lambda taking the message
+      # and the buffer that appends this field, or nothing when the field is
+      # unset or at a default it need not send. Everything the step needs
+      # (ivar name, tag bytes, enum, nested writers) is captured when it is
+      # built, so encoding does no per-field dispatch.
+      def encoder_step
+        ivar = @ivar
+        case rule
+        when :repeated then repeated_step(ivar)
+        when :map then map_step(ivar)
+        else singular_step(ivar)
+        end
       end
 
       # Validates and normalizes a value the way an assignment would.
@@ -166,26 +165,6 @@ module Fast
       end
 
       protected
-
-      def one_source(var, buffer, enum_ref)
-        case type
-        when :message then append_bytes_source(buffer, "#{var}.encode")
-        when :string, :bytes then append_bytes_source(buffer, var)
-        else "#{buffer} << #{tag_literal}\n#{scalar_source(var, buffer, enum_ref)}"
-        end
-      end
-
-      def scalar_source(var, buffer, enum_ref)
-        wire = "::Fast::Protowire::Wire"
-        case type
-        when :int32, :int64, :uint32, :uint64 then "#{wire}.append_varint(#{buffer}, #{var})"
-        when :sint32 then "#{wire}.append_varint(#{buffer}, #{wire}.zigzag32(#{var}))"
-        when :sint64 then "#{wire}.append_varint(#{buffer}, #{wire}.zigzag64(#{var}))"
-        when :bool then "#{buffer} << (#{var} ? 1 : 0)"
-        when :enum then "#{wire}.append_varint(#{buffer}, #{var}.is_a?(Symbol) ? #{enum_ref}.resolve(#{var}) : #{var})"
-        else "[#{var}].pack(#{FIXED_FORMATS.fetch(type).inspect}, buffer: #{buffer})"
-        end
-      end
 
       def coerce_one(value)
         case type
@@ -246,43 +225,6 @@ module Fast
         end
       end
 
-      def packed_source(var, buffer, enum_ref)
-        "unless #{var}.empty?\n  payload = String.new\n" \
-          "  #{var}.each { |e| #{scalar_source('e', 'payload', enum_ref)} }\n" \
-          "  #{append_bytes_source(buffer, 'payload')}\nend"
-      end
-
-      def unpacked_source(var, buffer, enum_ref)
-        "#{var}.each { |e| #{one_source('e', buffer, enum_ref)} }"
-      end
-
-      def map_source(var, buffer, enum_ref)
-        "#{var}.each do |k, e|\n  entry = String.new\n" \
-          "  #{@key_field.one_source('k', 'entry', enum_ref)}\n  #{@value_field.one_source('e', 'entry', enum_ref)}\n" \
-          "  #{append_bytes_source(buffer, 'entry')}\nend"
-      end
-
-      def append_bytes_source(buffer, bytes)
-        "::Fast::Protowire::Wire.append_length_delimited(#{buffer}, #{tag_literal}, #{bytes})"
-      end
-
-      def tag_literal
-        "\"#{@tag.bytes.map { |b| format('\\x%02x', b) }.join}\""
-      end
-
-      # The guard that decides whether a singular field is written at all.
-      def presence_source(var, enum_ref)
-        return "!#{var}.nil?" if explicit_presence?
-
-        case type
-        when :string, :bytes then "#{var} && !#{var}.empty?"
-        when :bool then var
-        when :enum then "#{var} && (#{var}.is_a?(Symbol) ? #{enum_ref}.resolve(#{var}) : #{var}) != 0"
-        when :double, :float then "#{var} && !(#{var}.zero? && (1.0 / #{var}).positive?)"
-        else "#{var} && #{var} != #{scalar_default.inspect}"
-        end
-      end
-
       # A String type names a class relative to where the owner is declared,
       # so a message can refer to itself or a sibling declared later.
       def namespace_of(owner)
@@ -306,6 +248,100 @@ module Fast
 
       def enum_number(value)
         value.is_a?(Symbol) ? @enum.resolve(value) : value
+      end
+
+      # -- compiled encoder steps --------------------------------------------
+
+      def singular_step(ivar)
+        write = writer
+        if explicit_presence?
+          ->(message, buffer) { (value = message.instance_variable_get(ivar)).nil? || write.call(buffer, value) }
+        else
+          omit = omitter
+          lambda do |message, buffer|
+            value = message.instance_variable_get(ivar)
+            write.call(buffer, value) unless value.nil? || omit.call(value)
+          end
+        end
+      end
+
+      def repeated_step(ivar)
+        if packed?
+          tag = @tag
+          scalar = scalar_writer
+          lambda do |message, buffer|
+            values = message.instance_variable_get(ivar)
+            next if values.empty?
+
+            payload = String.new
+            values.each { |value| scalar.call(payload, value) }
+            Wire.append_length_delimited(buffer, tag, payload)
+          end
+        else
+          write = writer
+          ->(message, buffer) { message.instance_variable_get(ivar).each { |value| write.call(buffer, value) } }
+        end
+      end
+
+      def map_step(ivar)
+        tag = @tag
+        key = @key_field.writer
+        value = @value_field.writer
+        lambda do |message, buffer|
+          message.instance_variable_get(ivar).each do |k, v|
+            entry = String.new
+            key.call(entry, k)
+            value.call(entry, v)
+            Wire.append_length_delimited(buffer, tag, entry)
+          end
+        end
+      end
+
+      # Appends the tag and one value.
+      def writer
+        tag = @tag
+        case type
+        when :message then ->(buffer, value) { Wire.append_length_delimited(buffer, tag, value.encode) }
+        when :string, :bytes then ->(buffer, value) { Wire.append_length_delimited(buffer, tag, value) }
+        else
+          scalar = scalar_writer
+          lambda do |buffer, value|
+            buffer << tag
+            scalar.call(buffer, value)
+          end
+        end
+      end
+
+      # Appends one scalar value without its tag, as packed fields need.
+      def scalar_writer
+        case type
+        when :int32, :int64, :uint32, :uint64 then ->(buffer, value) { Wire.append_varint(buffer, value) }
+        when :sint32 then ->(buffer, value) { Wire.append_varint(buffer, Wire.zigzag32(value)) }
+        when :sint64 then ->(buffer, value) { Wire.append_varint(buffer, Wire.zigzag64(value)) }
+        when :bool then ->(buffer, value) { buffer << (value ? 1 : 0) }
+        when :enum
+          enum = @enum
+          ->(buffer, value) { Wire.append_varint(buffer, value.is_a?(Symbol) ? enum.resolve(value) : value) }
+        else
+          format = FIXED_FORMATS.fetch(type)
+          ->(buffer, value) { [value].pack(format, buffer: buffer) }
+        end
+      end
+
+      # Decides whether a field without presence is at a value it need not
+      # send. Floats compare bitwise, as the reference encoder does.
+      def omitter
+        case type
+        when :string, :bytes then ->(value) { value.empty? } # rubocop:disable Style/SymbolProc
+        when :bool then ->(value) { !value } # rubocop:disable Style/SymbolProc
+        when :double, :float then ->(value) { value.zero? && (1.0 / value).positive? }
+        when :enum
+          enum = @enum
+          ->(value) { (value.is_a?(Symbol) ? enum.resolve(value) : value).zero? }
+        else
+          default = scalar_default
+          ->(value) { value == default }
+        end
       end
 
       # -- validation --------------------------------------------------------
@@ -457,6 +493,9 @@ module Fast
         value &= (1 << bits) - 1
         value >= (1 << (bits - 1)) ? value - (1 << bits) : value
       end
+
+      # A map's key and value fields build the entry writer together.
+      protected :writer
     end
   end
 end

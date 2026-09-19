@@ -34,7 +34,7 @@ Class methods
 | `.oneofs` | `Hash{Symbol => Array<Symbol>}` | Members per oneof. |
 | `.sorted_fields` | `Array<Field>` | By field number, the order fields are written. |
 | `.syntax` | `:proto2 \| :proto3` | |
-| `.compile_encoder` | — | Defines the class's own `#encode` from its declarations. Called for you on the first `encode`; a later declaration discards it so the next `encode` recompiles. |
+| `.compile_encoder` | — | Defines the class's own `#encode` from one closure per field (`Field#encoder_step`). Called for you on the first `encode`; a later declaration discards it so the next `encode` recompiles. |
 
 ## Instance API
 

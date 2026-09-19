@@ -5,32 +5,33 @@ What happens between `message.encode` and the bytes, and why it's arranged that 
 ## Compiled encoders
 
 The first time an instance of a class is encoded, the class compiles its own `encode`
-method from its field declarations (`Message.compile_encoder`). The generated source is one
-block per field in field-number order:
+method from its field declarations (`Message.compile_encoder`). Each field contributes one
+*step*, a lambda taking the message and the buffer, built once with everything it needs
+captured: the ivar name, the tag bytes, the enum module, the writer for the field's type,
+and the guard that decides whether the field is written at all. `encode` is then
+`define_method` over the steps in field-number order:
 
 ```ruby
-v0 = @name
-if v0 && !v0.empty?
-  ::Fast::Protowire::Wire.append_length_delimited(buffer, "\x0a", v0)
+steps = sorted_fields.map(&:encoder_step)
+define_method(:encode) do |buffer = String.new|
+  steps.each { |step| step.call(self, buffer) }
+  buffer << @unknown_fields if @unknown_fields
+  buffer
 end
-v2 = @type
-if v2 && (v2.is_a?(Symbol) ? self.class.encoder_enums[2].resolve(v2) : v2) != 0
-  buffer << "\x18"
-  ::Fast::Protowire::Wire.append_varint(buffer, v2.is_a?(Symbol) ? self.class.encoder_enums[2].resolve(v2) : v2)
-end
-v3 = @metric
-v3.each { |e| ::Fast::Protowire::Wire.append_length_delimited(buffer, "\x22", e.encode) }
 ```
 
-The tag for each field is a frozen literal (the generated source carries an
-`# encoding: ASCII-8BIT` magic comment, so the literals are binary), the presence guard is
-inlined per rule and type, and fixed-width values use `Array#pack` with a `buffer:` so no
-intermediate String is made. This is the same approach `protoc` takes for compiled
-languages, and it removed most of the cost of the interpretive version: no dispatch on
-rule or type per field, no method call to read the ivar, no separate omit check.
+All the dispatch on rule and type happens when a step is built, not on every encode; what
+runs per field is one ivar read, one guard and one writer. Fixed-width values use
+`Array#pack` with a `buffer:` so no intermediate String is made. Declaring another field
+after the compile removes the method; the next `encode` compiles again.
 
-Declaring another field after the compile removes the method; the next `encode` compiles
-again.
+An earlier version generated the method's source as a String and `class_eval`ed it, one
+straight-line statement per field, as `protoc` does for compiled languages. That was
+faster (0.23 s against 0.35 s to encode a 36k-series family's pre-built objects, 0.63 s
+against 0.75 s for the whole render), but it was Ruby in strings: unreviewable without
+capturing the generated source, and dependent on escaping binary tag literals correctly.
+The closure form was chosen as the readable reference; the generated form can return
+behind the same interface if the difference ever matters.
 
 ## Buffers
 
