@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Encoding allocates nothing per nested message, packed field or map
   entry: each is written into the parent buffer behind a length prefix
