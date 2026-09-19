@@ -17,9 +17,20 @@ module Fast
       UINT64_MASK = (1 << 64) - 1
       # Zero bytes a length prefix is widened to, by varint width.
       PLACEHOLDERS = Array.new(11) { |width| ("\0" * width).b.freeze }.freeze
-      private_constant :UINT64_MASK, :PLACEHOLDERS
+      private_constant :PLACEHOLDERS
 
       module_function
+
+      # A buffer written to here must be binary: appending a byte to a text
+      # String appends that encoding's character for it instead, silently
+      # writing something else. An empty buffer is simply retagged, so the
+      # usual ways of making one (+"", String.new("")) still work.
+      def binary_buffer(buffer)
+        return buffer if buffer.encoding == Encoding::BINARY
+        raise ArgumentError, "buffer must be a binary String, got #{buffer.encoding}" unless buffer.empty?
+
+        buffer.force_encoding(Encoding::BINARY)
+      end
 
       # The key for +number+ / +wire_type+ as frozen bytes.
       def tag(number, wire_type)

@@ -75,6 +75,32 @@ describe "parity with google-protobuf" do
     expect(Parity3::Wide.decode(ours.encode)).to be(:==, Parity3::Wide.new(a: 1, b: 2, c: "x"))
   end
 
+  it "decodes bytes the DSL cannot express to the same values and bytes the reference does" do
+    ParityCases::SCALARS_DECODE_CASES.each_value do |bytes|
+      ours = Mirror3::Scalars.decode(bytes)
+      theirs = Parity3::Scalars.decode(bytes)
+      %i[f_int32 f_uint64 f_sint32 f_sint64].each { |f| expect(ours.public_send(f)).to be(:==, theirs.public_send(f)) }
+      expect(ours.encode).to be(:==, theirs.to_proto)
+    end
+
+    ParityCases::MAPS_DECODE_CASES.each_value do |bytes|
+      expect(Mirror3::Maps.decode(bytes).encode).to be(:==, Parity3::Maps.decode(bytes).to_proto)
+    end
+  end
+
+  it "decodes a UTF-8-tagged input to the bytes the reference decodes it to" do
+    ParityCases::SCALARS_DECODE_CASES.each_value do |bytes|
+      as_text = bytes.dup.force_encoding(Encoding::UTF_8)
+      expect(Mirror3::Scalars.decode(as_text).encode).to be(:==, Parity3::Scalars.decode(bytes).to_proto)
+    end
+  end
+
+  it "encodes into an empty buffer of any encoding as it does into a binary one" do
+    ParityCases::SCALAR_CASES.each do |attributes|
+      expect(Mirror3::Scalars.new(attributes).encode(+"")).to be(:==, Parity3::Scalars.new(attributes).to_proto)
+    end
+  end
+
   it "merges concatenated encodings the way the reference does" do
     bytes = Parity3::Scalars.new(f_int32: 1, f_string: "old", child: { f_int32: 1 }).to_proto +
             Parity3::Scalars.new(f_string: "new", child: { f_string: "c" }).to_proto

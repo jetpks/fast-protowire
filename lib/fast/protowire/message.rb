@@ -97,6 +97,7 @@ module Fast
         def compile_encoder
           steps = sorted_fields.map(&:encoder_step)
           define_method(:encode) do |buffer = String.new|
+            Wire.binary_buffer(buffer)
             steps.each { |step| step.call(self, buffer) }
             buffer << @unknown_fields if @unknown_fields
             buffer
@@ -172,13 +173,15 @@ module Fast
 
       # Reads fields from +reader+ into this message (protobuf merge
       # semantics: later scalars win, repeated fields append, nested messages
-      # merge) and returns self.
+      # merge) and returns self. A declared field arriving with a wire type
+      # it does not accept is schema drift rather than corruption, so it is
+      # kept as an unknown field, as the reference does.
       def merge_from(reader)
         until reader.eof?
           key = reader.read_varint
           wire_type = key & 0x7
           field = self.class.fields_by_number[key >> 3]
-          if field
+          if field&.accepts?(wire_type)
             write_field(field, field.decode(reader, wire_type, instance_variable_get(field.ivar)))
           else
             Wire.append_varint(@unknown_fields ||= String.new, key)

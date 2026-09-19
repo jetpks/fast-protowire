@@ -70,6 +70,14 @@ describe "allocations" do
     expect(allocations(10) { MirrorPrometheus::MetricFamily.decode(bytes) }).to be(:<, (100 * per_metric) + 10)
   end
 
+  it "decodes a text-tagged input for one object more, the binary view of it" do
+    bytes = family(10, 4).encode
+    text = bytes.dup.force_encoding(Encoding::UTF_8)
+    MirrorPrometheus::MetricFamily.decode(text)
+    binary = allocations(10) { MirrorPrometheus::MetricFamily.decode(bytes) }
+    expect(allocations(10) { MirrorPrometheus::MetricFamily.decode(text) }).to be(:<, binary + 2)
+  end
+
   it "builds a message from a Hash in one object per message plus its containers" do
     attributes = { name: "method", value: "GET" }
     MirrorPrometheus::LabelPair.new(attributes)

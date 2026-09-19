@@ -100,6 +100,26 @@ module ParityCases
     { must: 1, o_enum: :SECOND, o_string: "hello", o_default: 0, o_bool: false }
   ].freeze
 
+  # Bytes no encoder here produces but a decoder meets: varints wider than the
+  # field, a declared field arriving with a wire type it does not accept, a map
+  # entry that omits its value. Both sides decode each and must agree on the
+  # value and on the bytes it re-encodes to.
+  SCALARS_DECODE_CASES = {
+    "uint64 in ten bytes, tenth 0x7f" => "\x30#{"\xff" * 9}\x7f",
+    "uint64 in ten bytes, tenth 0x02" => "\x30#{"\x80" * 9}\x02",
+    "sint32 with bits above 32" => "\x38\x83\x80\x80\x80\x80\x20",
+    "sint64 in ten bytes, tenth 0x7f" => "\x40#{"\xff" * 9}\x7f",
+    "string field as a varint" => "\x70\x01\x18\x05",
+    "int32 field length-delimited" => "\x1a\x01\x78\x18\x05",
+    "message field as fixed32" => "\xa5\x01\x01\x02\x03\x04\x18\x05",
+    "unknown field in a child" => "\xa2\x01\x05\x9a\x06\x02\xc3\xa9\xf8\xff\xff\xff\x0f\x09"
+  }.transform_values { |bytes| bytes.b.freeze }.freeze
+
+  MAPS_DECODE_CASES = {
+    "map entry holding only its key" => "\x12\x02\x08\x07",
+    "empty map entry" => "\x12\x00"
+  }.transform_values { |bytes| bytes.b.freeze }.freeze
+
   TREE = { label: "root", children: [{ label: "a", children: [{ label: "aa" }] }, { label: "b" }],
            parent: { label: "p" } }.freeze
 end

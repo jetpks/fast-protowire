@@ -47,6 +47,7 @@ module Fast
         @ivar = :"@#{name}"
         resolve_type(type)
         @packed = rule == :repeated && (packed.nil? ? owner.syntax == :proto3 && packable? : packed)
+        @strict_utf8 = @type == :string && owner.syntax == :proto3
         @default = default
         @tag = Wire.tag(number, packed? ? Wire::LENGTH_DELIMITED : wire_type)
         return unless map?
@@ -83,6 +84,13 @@ module Fast
 
       def packable?
         PACKABLE.include?(type)
+      end
+
+      # Whether a value of +wire_type+ can be read into this field: its own,
+      # plus the packed form of a packable repeated field however it was
+      # declared. Anything else is schema drift, kept as an unknown field.
+      def accepts?(wire_type)
+        wire_type == self.wire_type || (repeated? && packable? && wire_type == Wire::LENGTH_DELIMITED)
       end
 
       # Whether an unset field is distinguishable from one set to its default.
@@ -174,10 +182,17 @@ module Fast
         expect(reader, wire_type)
         case type
         when :message then reader.read_nested { |nested| message_class.new.merge_from(nested) }
-        when :string then reader.read_length_delimited.force_encoding(Encoding::UTF_8)
+        when :string then read_string(reader)
         when :bytes then reader.read_length_delimited
         else read_scalar(reader)
         end
+      end
+
+      # What a map entry holds for this field when the entry omits it: the
+      # type's default, except that a message value is an empty instance, as
+      # the reference materialises one (and nil would not encode).
+      def entry_default
+        type == :message ? message_class.new : default_value
       end
 
       # Appends the tag and one value. A nested message is encoded straight
@@ -423,7 +438,7 @@ module Fast
       def decode_map_entry(reader, wire_type, hash)
         expect(reader, wire_type).read_nested do |entry|
           key = @key_field.default_value
-          value = @value_field.default_value
+          value = @value_field.entry_default
           until entry.eof?
             tag = entry.read_varint
             case tag >> 3
@@ -450,11 +465,21 @@ module Fast
         when :int64 then signed(reader.read_varint, 64)
         when :uint32 then reader.read_varint & 0xFFFF_FFFF
         when :uint64 then reader.read_varint
-        when :sint32, :sint64 then Wire.unzigzag(reader.read_varint)
+        when :sint32 then Wire.unzigzag(reader.read_varint & 0xFFFF_FFFF)
+        when :sint64 then Wire.unzigzag(reader.read_varint)
         when :bool then reader.read_varint != 0
         when :double, :fixed64, :sfixed64 then reader.read_fixed(FIXED_FORMATS.fetch(type), 8)
         else reader.read_fixed(FIXED_FORMATS.fetch(type), 4)
         end
+      end
+
+      # proto3 requires a parser to reject a string field that is not valid
+      # UTF-8; proto2 does not, and the reference keeps it.
+      def read_string(reader)
+        string = reader.read_length_delimited.force_encoding(Encoding::UTF_8)
+        raise DecodeError, "#{name}: string is not valid UTF-8" if @strict_utf8 && !string.valid_encoding?
+
+        string
       end
 
       def signed(value, bits)

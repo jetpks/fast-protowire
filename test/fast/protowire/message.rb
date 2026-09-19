@@ -4,6 +4,11 @@ require "fast/protowire"
 require "schema"
 
 describe Fast::Protowire::Message do
+  # +depth+ Tree.parent wrappers around nothing.
+  def nested(depth)
+    depth.times.inject("".b) { |inner, _| "\x1a".b + Fast::Protowire::Wire.varint(inner.bytesize) + inner }
+  end
+
   it "reads defaults for unset fields and reports presence only where the schema has it" do
     scalars = Mirror3::Scalars.new
     expect(scalars.f_int32).to be(:==, 0)
@@ -102,8 +107,45 @@ describe Fast::Protowire::Message do
     expect(repeated.r_int32).to be(:==, [1, 2])
   end
 
-  it "rejects a known field arriving with the wrong wire type" do
-    expect { Mirror3::Scalars.decode("\x0a\x01x".b) }.to raise_exception(Fast::Protowire::DecodeError)
+  it "keeps a known field arriving with a wire type it does not accept as an unknown field" do
+    decoded = Mirror3::Scalars.decode("\x0a\x01x\x18\x05".b) # f_double (1) sent length-delimited
+    expect(decoded.f_int32).to be(:==, 5)
+    expect(decoded.f_double).to be(:==, 0.0)
+    expect(decoded.unknown_fields).to be(:==, "\x0a\x01x".b)
+    expect(decoded.encode).to be(:==, "\x18\x05\x0a\x01x".b)
+  end
+
+  it "bounds nesting depth instead of overflowing the stack" do
+    expect(Mirror3::Tree.decode(nested(100)).parent).to be_a(Mirror3::Tree)
+    expect { Mirror3::Tree.decode(nested(101)) }.to raise_exception(Fast::Protowire::DecodeError)
+    expect { Mirror3::Tree.decode("\x93\x03".b * 5000) }.to raise_exception(Fast::Protowire::DecodeError)
+  end
+
+  it "decodes a map entry whose message value is absent as an empty message" do
+    maps = Mirror3::Maps.decode("\x12\x02\x08\x07".b) # an im entry holding its key and nothing else
+    expect(maps.im).to be(:==, { 7 => Mirror3::Scalars.new })
+    expect(maps.encode).to be(:==, "\x12\x04\x08\x07\x12\x00".b)
+  end
+
+  it "rejects invalid UTF-8 in a proto3 string and keeps it in a proto2 one" do
+    expect { Mirror3::Scalars.decode("\x72\x02\xff\xfe".b) }.to raise_exception(Fast::Protowire::DecodeError)
+    expect(Mirror3::Scalars.decode("\x72\x02\xc3\xa9".b).f_string).to be(:==, "é")
+    expect(Mirror2::Legacy.decode("\x12\x02\xff\xfe".b).o_string.bytes).to be(:==, [0xff, 0xfe])
+  end
+
+  it "decodes the same bytes whatever the input String is tagged" do
+    bytes = Mirror3::Wide.new(a: 1, b: 2, c: "é").encode
+    as_text = Mirror3::Narrow.decode(bytes.dup.force_encoding(Encoding::UTF_8))
+    expect(as_text).to be(:==, Mirror3::Narrow.decode(bytes))
+    expect(as_text.encode).to be(:==, Mirror3::Narrow.decode(bytes).encode)
+    scalars = Mirror3::Scalars.decode(Mirror3::Scalars.new(f_bytes: "\xff".b).encode.force_encoding(Encoding::UTF_8))
+    expect(scalars.f_bytes.encoding).to be(:==, Encoding::BINARY)
+  end
+
+  it "encodes into an empty buffer of any encoding and refuses a non-binary one holding text" do
+    scalars = Mirror3::Scalars.new(f_int32: 200)
+    expect(scalars.encode(+"")).to be(:==, scalars.encode)
+    expect { scalars.encode(+"prefix") }.to raise_exception(::ArgumentError)
   end
 
   it "refuses conflicting declarations" do
