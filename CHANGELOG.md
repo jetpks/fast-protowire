@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+- Ruby 3.3 support is dropped: the floor is now `>= 3.4`
+  (`required_ruby_version` in the gemspec), and CI runs the supported
+  minors, 3.4 and 4.0.
+
 ## 0.3.0
 
 - A declared field arriving with a wire type it does not accept is kept as
